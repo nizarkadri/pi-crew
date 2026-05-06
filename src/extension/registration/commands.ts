@@ -171,6 +171,22 @@ export function registerTeamCommands(pi: ExtensionAPI, deps: RegisterTeamCommand
 		},
 	});
 
+	pi.registerCommand("team-follow-up", {
+		description: "Send a follow-up prompt to a pi-crew task: <runId> <taskId> <prompt>",
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
+			const tokens = args.trim().split(/\s+/).filter(Boolean);
+			const runId = tokens.shift();
+			const taskId = tokens.shift();
+			const prompt = tokens.join(" ") || undefined;
+			if (!runId || !taskId || !prompt) {
+				await notifyCommandResult(ctx, "Usage: /team-follow-up <runId> <taskId> <prompt>. Use /team-respond for waiting-task replies.");
+				return;
+			}
+			const result = await handleTeamTool({ action: "api", runId, config: { operation: "follow-up-agent", taskId, prompt } }, teamCommandContext(ctx));
+			await notifyCommandResult(ctx, commandText(result));
+		},
+	});
+
 	pi.registerCommand("team-api", {
 		description: "Run safe pi-crew API interop operations: <runId> <operation> [key=value]",
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
