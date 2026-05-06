@@ -49,27 +49,30 @@ This roadmap is **not complete overall**. The `v0.1.46` release completed severa
 ### Completed in this upgrade cycle (after v0.1.46)
 
 - P0.1 effectiveness policy enforcement: default guard now escalates `warn` to `blocked` for mutating-role tasks with no observable worker activity; read-only roles remain `warning`.
+- P0.2 runtime safety persistence: manifests persist `runtimeResolution`; `runtime.resolved` event emitted; status shows safety; blocked runs persist evidence.
 - P1.1 durable steering/follow-up queues: `readMailbox` accepts `kind` filter; API `read-mailbox` supports `config.kind`; steering and follow-up are isolatable by kind.
+- P1.2 respond vs follow-up UX: `/team-follow-up` command added for continuation prompts; `/team-respond` remains for waiting-task replies.
+- P1.3 two-phase child process teardown: `WorkerExitStatus` populated from graceful SIGTERM → grace window → hard kill pipeline.
 - P1.5 event-tree provenance: `TeamEventMetadata` extended with `parentEventId`, `attemptId`, `branchId`, `causationId`, `correlationId`; retry and cancel events carry `attemptId`.
 - P1.6 synthetic terminal results: `buildSyntheticTerminalEvidence()` in `cancellation.ts`; cancelled in-flight tasks receive `"worker"`/`"cancelled"` terminal evidence records.
 - P1.7 unified capability inventory: `buildCapabilityInventory(cwd)` normalizes teams/workflows/agents into `CapabilityItem[]`; API `operation=inventory` returns sorted JSON.
+- P1.8 capability disable by stable ID: `disabledCapabilities` in `CrewPolicyConfig`; inventory marks disabled items with reason.
 - P2.1 typed hook lifecycle: `HookName`, `HookMode`, `HookOutcome`, `HookContext`, `HookResult`, `HookExecutionReport` types; `registerHook`/`executeHook`/`clearHooks` registry; `before_run_start` and `before_task_start` wired into team-runner.
-- P2.4 CancellationToken wired into long scans: `collectRuns`/`listRuns`/`listRecentRuns`/`listRunsByScope`, `validateMailbox`, `readAllMailboxMessages`, `pruneFinishedRuns`, `cleanupRunWorktrees` all accept optional `AbortSignal`.
+- P2.2 intent gates for destructive actions: `enforceDestructiveIntent` wired in cancel/cleanup/forget/prune/delete; configurable via `policy.requireIntentForDestructiveActions`.
+- P2.3 durable history projection: `transformRunContextBeforeWorkerStart()` and `convertRunHistoryToWorkerPrompt()` bounded projection functions.
+- P2.4 CancellationToken wired into long scans: `AbortSignal` passed to `collectRuns`/`validateMailbox`/`readAllMailboxMessages`/`pruneFinishedRuns`/`cleanupRunWorktrees`.
+- P2.5 content-addressed blob store: `writeBlob`/`readBlob`/`readBlobMetadata` with SHA-256 dedup and metadata sidecars.
+- P2.6 dashboard panes for capability and cancellation: `renderCapabilityPane` and `renderCancellationPane`.
 - Resume scaffold run fix: preserves scaffold mode from original manifest when workers not disabled.
 
 ### Partial / not safe to mark complete
 
-- P1.2 respond vs follow-up UX: `/team-respond` has better guidance, but there is no dedicated `/team-follow-up` command yet.
-- P1.8 persist capability disables by stable ID: inventory is readable but no disable/persist-by-ID yet.
-- P2.3 durable history projection: prompt artifacts exist, but explicit projection functions such as `transformRunContextBeforeWorkerStart(...)` / `convertRunHistoryToWorkerPrompt(...)` are not implemented.
+- P1.4 reserve worker control channel before spawn: controller metadata persistence during startup not yet implemented.
 - P2.7 event-first UI: render coalescing and snapshot caches exist, but live UI still relies on durable file polling as a primary source in several panes.
+- P2.8 shared raw scan-entry cache: not yet implemented.
 
 ### Missing / backlog
 
-- P1.4 reserve worker control channel before child spawn.
-- P2.2 policy-required intent gates for destructive actions are implemented as a configurable vertical slice.
-- P2.5 content-addressed blob artifact store with metadata sidecars and GC.
-- P2.6 dedicated dashboard panes for effectiveness/capability/attempt/deadletter evidence.
 - P2.8 shared raw scan-entry cache.
 - P3.1 tarball-install Pi smoke and version/tag/npm consistency checks as a formal release gate.
 
@@ -759,11 +762,11 @@ npm pack
 3. **P1.3 Two-phase worker teardown** — reduces stale/zombie worker risk.
 4. ~~**P1.1 Durable steering/follow-up queues**~~ ✅ Completed — `readMailbox` kind filter; API `read-mailbox` supports `config.kind`.
 5. ~~**P1.5 Event-tree provenance**~~ ✅ Completed — `TeamEventMetadata` extended with `parentEventId`/`attemptId`/`branchId`/`causationId`/`correlationId`.
-6. ~~**P1.7 Capability inventory view**~~ ✅ Completed — `buildCapabilityInventory()` + API `operation=inventory`.
-7. **P2.3 Durable history projection** — reduces prompt/context risks.
+6. ~~**P1.7 Capability inventory view**~~ ✅ Completed — `buildCapabilityInventory()` + API `operation=inventory` + dashboard pane.
+7. ~~**P2.3 Durable history projection**~~ ✅ Completed — `transformRunContextBeforeWorkerStart()` + `convertRunHistoryToWorkerPrompt()`.
 8. ~~**P2.4 CancellationToken**~~ ✅ Completed — wired into `collectRuns`/`validateMailbox`/`pruneFinishedRuns`/`cleanupRunWorktrees` etc.
-9. **P2.5 Blob artifacts** — prevents log/transcript bloat.
-10. **P2.6 Dashboard panels** — surface all new evidence in UI.
+9. ~~**P2.5 Blob artifacts**~~ ✅ Completed — content-addressed blob store with SHA-256 dedup and metadata sidecars.
+10. ~~**P2.6 Dashboard panels**~~ ✅ Completed — capability and cancellation panes.
 
 Also completed (not in original order list):
 - ~~**P1.6 Synthetic terminal results**~~ ✅ — `buildSyntheticTerminalEvidence()` for cancelled in-flight tasks.
