@@ -24,6 +24,7 @@ import type { RunSnapshotCache, RunUiSnapshot } from "./snapshot-types.ts";
 import { spinnerBucket, spinnerFrame } from "./spinner.ts";
 import type { MetricRegistry } from "../observability/metric-registry.ts";
 import { resolveRealContainedPath } from "../utils/safe-paths.ts";
+import { runEventBus } from "./run-event-bus.ts";
 
 interface DashboardComponent {
 	invalidate(): void;
@@ -253,6 +254,7 @@ export class RunDashboard implements DashboardComponent {
 	private cachedVersion = "";
 	private cachedLines: string[] = [];
 	private readonly unsubscribeTheme: () => void;
+	private readonly unsubscribeEventBus: () => void;
 
 	constructor(
 		runs: TeamRunManifest[],
@@ -265,6 +267,7 @@ export class RunDashboard implements DashboardComponent {
 		this.theme = asCrewTheme(theme);
 		this.options = options;
 		this.unsubscribeTheme = subscribeThemeChange(theme, () => this.invalidate());
+		this.unsubscribeEventBus = runEventBus.onAny(() => this.invalidate());
 	}
 
 	private refreshRuns(): void {
@@ -301,6 +304,7 @@ export class RunDashboard implements DashboardComponent {
 
 	dispose(): void {
 		this.unsubscribeTheme();
+		this.unsubscribeEventBus();
 	}
 
 	private selectedRunId(): string | undefined {

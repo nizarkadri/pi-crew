@@ -13,6 +13,7 @@ import { asCrewTheme, subscribeThemeChange } from "./theme-adapter.ts";
 import { Box, Text } from "./layout-primitives.ts";
 import { requestRender, setExtensionWidget } from "./pi-ui-compat.ts";
 import type { RunSnapshotCache, RunUiSnapshot } from "./snapshot-types.ts";
+import { runEventBus } from "./run-event-bus.ts";
 import { DEFAULT_UI } from "../config/defaults.ts";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -219,6 +220,7 @@ class CrewWidgetComponent implements WidgetComponent {
 	private cachedBaseLines: string[] = [];
 	private cachedTheme: CrewTheme;
 	private readonly unsubscribeTheme: () => void;
+	private readonly unsubscribeEventBus: () => void;
 
 	constructor(model: CrewWidgetModel, themeLike: unknown) {
 		this.model = model;
@@ -226,6 +228,7 @@ class CrewWidgetComponent implements WidgetComponent {
 		this.cachedTheme = this.theme;
 		this.cacheSignature = "";
 		this.unsubscribeTheme = subscribeThemeChange(themeLike, () => this.invalidate());
+		this.unsubscribeEventBus = runEventBus.onAny(() => this.invalidate());
 	}
 
 	private buildSignature(runs: WidgetRun[]): string {
@@ -250,6 +253,7 @@ class CrewWidgetComponent implements WidgetComponent {
 
 	dispose(): void {
 		this.unsubscribeTheme();
+		this.unsubscribeEventBus();
 	}
 
 	render(width: number): string[] {

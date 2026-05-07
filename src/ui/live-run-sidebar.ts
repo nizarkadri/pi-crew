@@ -14,6 +14,7 @@ import { asCrewTheme, subscribeThemeChange } from "./theme-adapter.ts";
 import { Box, Text } from "./layout-primitives.ts";
 import type { RunSnapshotCache, RunUiSnapshot } from "./snapshot-types.ts";
 import { spinnerBucket, spinnerFrame } from "./spinner.ts";
+import { runEventBus } from "./run-event-bus.ts";
 
 const TASK_READ_TTL_MS = 200;
 
@@ -59,6 +60,7 @@ export class LiveRunSidebar {
 	private readonly theme: CrewTheme;
 	private readonly config: CrewUiConfig;
 	private readonly unsubscribeTheme: () => void;
+	private readonly unsubscribeEventBus: () => void;
 	private readonly snapshotCache?: RunSnapshotCache;
 	private cachedLines: string[] = [];
 	private cachedWidth = 0;
@@ -72,6 +74,7 @@ export class LiveRunSidebar {
 		this.config = input.config ?? {};
 		this.snapshotCache = input.snapshotCache;
 		this.unsubscribeTheme = subscribeThemeChange(input.theme, () => this.invalidate());
+		this.unsubscribeEventBus = runEventBus.onAny(() => this.invalidate());
 	}
 
 	private buildSignature(manifestStatus: string, tasks: TeamTaskState[], agents: ReturnType<typeof readCrewAgents>, waitingCount: number, snapshot?: RunUiSnapshot): string {
@@ -99,6 +102,7 @@ export class LiveRunSidebar {
 
 	dispose(): void {
 		this.unsubscribeTheme();
+		this.unsubscribeEventBus();
 	}
 
 	render(width: number): string[] {
