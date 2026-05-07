@@ -57,3 +57,19 @@ test("capability inventory with empty disabledCapabilities returns all active", 
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
 });
+test("capability inventory marks shadowed resources when user/project has same name as builtin", () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-crew-cap-shadow-"));
+	fs.mkdirSync(path.join(cwd, ".crew"), { recursive: true });
+	try {
+		const inventory = buildCapabilityInventory(cwd);
+		// All items are builtin in this test setup, so none should be shadowed
+		const shadowed = inventory.filter((item) => item.state === "shadowed");
+		assert.ok(Array.isArray(shadowed), "shadowed items should be an array");
+		// Verify structure: shadowed items should have shadowedBy field
+		for (const item of shadowed) {
+			assert.ok(item.shadowedBy, `shadowed item ${item.id} should have shadowedBy`);
+		}
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});

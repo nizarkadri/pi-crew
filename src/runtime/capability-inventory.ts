@@ -77,9 +77,20 @@ function normalizeWorkflows(cwd: string, disabledIds: Set<string>): CapabilityIt
 export function buildCapabilityInventory(cwd: string, config?: PiTeamsConfig): CapabilityItem[] {
 	const disabledIds = new Set<string>(config?.policy?.disabledCapabilities ?? []);
 	const agents = discoverAgents(cwd);
-	return [
+	const items = [
 		...normalizeTeams(cwd, disabledIds),
 		...normalizeWorkflows(cwd, disabledIds),
 		...normalizeAgents([...agents.builtin, ...agents.user, ...agents.project], "builtin", disabledIds),
-	].sort((a, b) => a.id.localeCompare(b.id));
+	];
+
+	// Mark shadowed resources: project/user items with same kind:name as a builtin
+	const builtinNames = new Set(items.filter((item) => item.source === "builtin").map((item) => `${item.kind}:${item.name}`));
+	for (const item of items) {
+		if (item.source !== "builtin" && builtinNames.has(`${item.kind}:${item.name}`)) {
+			item.state = "shadowed";
+			item.shadowedBy = `builtin:${item.kind}:${item.name}`;
+		}
+	}
+
+	return items.sort((a, b) => a.id.localeCompare(b.id));
 }
