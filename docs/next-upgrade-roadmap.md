@@ -621,7 +621,7 @@ Use it in:
 **Acceptance criteria** ✅
 
 - ✅ Long scan can abort within bounded cadence (`AbortSignal` wired into `collectRuns`, `validateMailbox`, `readAllMailboxMessages`, `pruneFinishedRuns`, `cleanupRunWorktrees`).
-- ☐ `CancellationToken.heartbeat(stage)` available as utility; not yet called in production scan loops (long scans use `AbortSignal` directly).
+- ✅ `CancellationToken.heartbeat(stage)` wired into `collectRuns` and `pruneFinishedRuns` with stage diagnostics.
 - ✅ Existing APIs can pass no token/signal and keep current behavior.
 
 ## P2 — Artifact Store Improvements

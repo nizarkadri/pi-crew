@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 0.1.47
+
+### Added
+
+- **Typed hook lifecycle** — 8 of 9 hooks wired: `before_run_start`, `before_task_start`, `task_result`, `before_cancel`, `before_forget`, `before_cleanup`, `before_publish`, `run_recovery`. Hooks are opt-in, blocking/non-blocking, with audit events.
+- **Event-first UI bus** — `RunEventBus` emits on every `appendEvent` call; dashboard, crew widget, sidebar, and snapshot cache subscribe for event-driven invalidation instead of polling.
+- **Shared scan cache** — `SharedScanCache` caches manifest reads and active-run entries with TTL, mtime/size invalidation, and LRU eviction.
+- **Capability inventory** — `buildCapabilityInventory()` enumerates teams, workflows, agents, and skills with stable `kind:name` IDs; supports policy disable and shadowing detection.
+- **Skills in capability inventory** — `discoverSkills()` reads SKILL.md frontmatter; skills appear with kind=`skill` and source=`package`/`project`.
+- **Mailbox kind-separated breakdown** — `RunUiMailbox` tracks `steerUnread`/`followUpUnread`/`responseUnread`/`messageUnread`; mailbox pane shows urgency indicators.
+- **Run recovery hook** — `applyRecoveryPlan` fires `run_recovery` hook; blocked recovery emits `crew.run.recovery_blocked` event.
+- **Synthetic tool cancellation evidence** — Cancelled in-flight tasks receive `tool`-level terminal evidence alongside `worker`-level.
+- **CancellationToken wired into production loops** — `collectRuns` and `pruneFinishedRuns` use `CancellationToken.heartbeat(stage)` for progress diagnostics.
+- **Blob artifact store** — SHA-256 content-addressed storage with metadata sidecars.
+- **Run event provenance** — Event metadata includes `parentEventId`, `attemptId`, `branchId`, `causationId`, `correlationId`.
+- **Control channel reservation** — `ControlReservation` before worker spawn with deterministic `controllerId`.
+- **Release smoke test** — `npm run smoke:release` automates tarball install + version consistency check.
+- **Width-safety tests** — Crew widget rendering verified at widths 1/40/200/empty/multiple.
+
+### Changed
+
+- `handleCancel`, `handleForget`, `handleCleanup`, `handlePrune`, `handleExport` converted to async for hook execution.
+- `before_cancel`/`before_forget`/`before_cleanup` hooks can block their respective operations.
+- `before_publish` hook fires before run export.
+- `task_result` hook fires before `task.completed`/`task.failed` events.
+- Dashboard, widget, and sidebar auto-invalidate on `RunEventBus` events.
+
 ## 0.1.45
 
 ### Added
