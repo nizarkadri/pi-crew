@@ -81,7 +81,20 @@ function setAsyncAgentReaderCache(filePath: string, entry: { expiresAt: number; 
 
 export function readCrewAgents(manifest: TeamRunManifest): CrewAgentRecord[] {
 	try {
-		return readJsonFileCoalesced(agentsPath(manifest), AGENT_READER_TTL_MS, () => readJsonFile<CrewAgentRecord[]>(agentsPath(manifest)) ?? []);
+		const records = readJsonFileCoalesced(agentsPath(manifest), AGENT_READER_TTL_MS, () => readJsonFile<CrewAgentRecord[]>(agentsPath(manifest)) ?? []);
+		// Validate schema and deduplicate by id to handle concurrent write conflicts
+		const seen = new Set<string>();
+		const deduped = records.filter((r) => {
+			if (!r || typeof r.id !== "string" || typeof r.taskId !== "string") return false;
+			if (seen.has(r.id)) return false;
+			seen.add(r.id);
+			return true;
+		});
+		if (deduped.length !== records.length) {
+			// Schema mismatch or duplicates detected — save corrected state
+			saveCrewAgents(manifest, deduped);
+		}
+		return deduped;
 	} catch {
 		return [];
 	}
@@ -96,9 +109,20 @@ export async function readCrewAgentsAsync(manifest: TeamRunManifest): Promise<Cr
 	const inFlight = (async (): Promise<CrewAgentRecord[]> => {
 		try {
 			const parsed = JSON.parse(await fs.promises.readFile(filePath, "utf-8")) as unknown;
-			const records = Array.isArray(parsed) ? redactSecrets(parsed) as CrewAgentRecord[] : [];
-			setAsyncAgentReaderCache(filePath, { expiresAt: Date.now() + AGENT_READER_TTL_MS, records });
-			return records;
+			const raw = Array.isArray(parsed) ? redactSecrets(parsed) as CrewAgentRecord[] : [];
+			// Deduplicate by id to handle concurrent write conflicts
+			const seen = new Set<string>();
+			const deduped = raw.filter((r) => {
+				if (!r || typeof r.id !== "string" || typeof r.taskId !== "string") return false;
+				if (seen.has(r.id)) return false;
+				seen.add(r.id);
+				return true;
+			});
+			if (deduped.length !== raw.length) {
+				try { saveCrewAgents(manifest, deduped); } catch { /* best-effort */ }
+			}
+			setAsyncAgentReaderCache(filePath, { expiresAt: Date.now() + AGENT_READER_TTL_MS, records: deduped });
+			return deduped;
 		} catch {
 			setAsyncAgentReaderCache(filePath, { expiresAt: Date.now() + AGENT_READER_TTL_MS, records: [] });
 			return [];
@@ -117,9 +141,13 @@ export function saveCrewAgents(manifest: TeamRunManifest, records: CrewAgentReco
 }
 
 export function upsertCrewAgent(manifest: TeamRunManifest, record: CrewAgentRecord): void {
-	const records = readCrewAgents(manifest).filter((item) => item.id !== record.id);
-	records.push(record);
-	saveCrewAgents(manifest, records);
+	// Read current state
+	const existing = readCrewAgents(manifest);
+	// Deduplicate by id: keep newer record when same id appears
+	const idIndex = new Map(existing.map((item, i) => [item.id, i]));
+	const merged: CrewAgentRecord[] = existing.map((item) => item.id === record.id ? record : item);
+	if (!idIndex.has(record.id)) merged.push(record);
+	saveCrewAgents(manifest, merged);
 	writeCrewAgentStatus(manifest, record);
 }
 
