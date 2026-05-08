@@ -14,10 +14,10 @@ test("detectTeamIntent handles docs-only task-list bullets", () => {
 
 test("buildAutonomousPolicy contains routing guidance", () => {
 	const policy = buildAutonomousPolicy("review-team this diff", { preferAsyncForLongTasks: true });
-	assert.match(policy, /Autonomous Delegation Policy/);
+	assert.match(policy, /pi-crew Delegation Policy/);
 	assert.match(policy, /team='review'/);
 	assert.match(policy, /review/);
-	assert.match(policy, /Decision framework/);
+	assert.match(policy, /Decision Table/);
 	assert.match(policy, /Conflict-safe task splitting/);
 	assert.match(policy, /prefer async/);
 });
