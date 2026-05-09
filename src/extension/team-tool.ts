@@ -227,7 +227,8 @@ export async function handleTeamTool(params: TeamToolParamsValue, ctx: TeamConte
 		case "get": return handleGet(params, ctx);
 		case "init": {
 			const cfg = configRecord(params.config);
-			const initialized = initializeProject(ctx.cwd, { copyBuiltins: cfg.copyBuiltins === true, overwrite: cfg.overwrite === true, configScope: cfg.configScope === "project" || cfg.scope === "project" ? "project" : cfg.configScope === "none" || cfg.scope === "none" ? "none" : "global" });
+			const ignoreMethod = typeof cfg.ignoreMethod === "string" && (cfg.ignoreMethod === "gitignore" || cfg.ignoreMethod === "exclude") ? cfg.ignoreMethod : undefined;
+			const initialized = initializeProject(ctx.cwd, { copyBuiltins: cfg.copyBuiltins === true, overwrite: cfg.overwrite === true, configScope: cfg.configScope === "project" || cfg.scope === "project" ? "project" : cfg.configScope === "none" || cfg.scope === "none" ? "none" : "global", ignoreMethod });
 			return result([
 				"Initialized pi-crew project layout.",
 				"Directories:",
@@ -236,7 +237,7 @@ export async function handleTeamTool(params: TeamToolParamsValue, ctx: TeamConte
 				...(initialized.copiedFiles.length ? initialized.copiedFiles.map((file) => `- ${file}`) : ["- (none)"]),
 				...(initialized.skippedFiles.length ? ["Skipped existing files:", ...initialized.skippedFiles.map((file) => `- ${file}`)] : []),
 				`Config: ${initialized.configPath || "(none)"} (${initialized.configScope}${initialized.configCreated ? "; created" : initialized.configSkipped ? "; already existed" : "; unchanged"})`,
-				`Gitignore: ${initialized.gitignorePath} (${initialized.gitignoreUpdated ? "updated" : "already configured"})`,
+				`Ignore: ${initialized.gitignorePath} (${initialized.gitignoreUpdated ? "updated" : "already configured"})`,
 			].join("\n"), { action: "init", status: "ok" });
 		}
 		case "help": return result(piTeamsHelp(), { action: "help", status: "ok" });

@@ -8,6 +8,7 @@ export interface ProjectInitOptions {
 	copyBuiltins?: boolean;
 	overwrite?: boolean;
 	configScope?: "global" | "project" | "none";
+	ignoreMethod?: "gitignore" | "exclude";
 }
 
 export interface ProjectInitResult {
@@ -121,14 +122,25 @@ export function initializeProject(cwd: string, options: ProjectInitOptions = {})
 		copyBuiltinDir("workflows", workflowsDir, options.overwrite === true, copiedFiles, skippedFiles);
 	}
 
-	const gitignorePath = path.join(cwd, ".gitignore");
+	const ignoreMethod = options.ignoreMethod ?? "gitignore";
 	const desired = [`${ignorePrefix}/state/`, `${ignorePrefix}/artifacts/`, `${ignorePrefix}/worktrees/`, `${ignorePrefix}/imports/`];
+	const gitignorePath = ignoreMethod === "exclude"
+		? path.join(cwd, ".git", "info", "exclude")
+		: path.join(cwd, ".gitignore");
+	let gitignoreUpdated = false;
+	if (ignoreMethod === "exclude") {
+		// Ensure .git/info/ directory exists
+		const infoDir = path.dirname(gitignorePath);
+		if (!fs.existsSync(infoDir)) {
+			fs.mkdirSync(infoDir, { recursive: true });
+		}
+	}
 	const existing = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, "utf-8") : "";
 	const missing = desired.filter((entry) => !existing.split(/\r?\n/).includes(entry));
-	let gitignoreUpdated = false;
 	if (missing.length > 0) {
 		const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-		fs.writeFileSync(gitignorePath, `${existing}${prefix}\n# pi-crew runtime state\n${missing.join("\n")}\n`, "utf-8");
+		const comment = "# pi-crew runtime state";
+		fs.writeFileSync(gitignorePath, `${existing}${prefix}\n${comment}\n${missing.join("\n")}\n`, "utf-8");
 		gitignoreUpdated = true;
 	}
 

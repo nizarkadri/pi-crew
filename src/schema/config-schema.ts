@@ -139,6 +139,7 @@ export const PiTeamsConfigSchema = Type.Object({
 	executeWorkers: Type.Optional(Type.Boolean()),
 	notifierIntervalMs: Type.Optional(Type.Number({ minimum: 1000 })),
 	requireCleanWorktreeLeader: Type.Optional(Type.Boolean()),
+	ignoreMethod: Type.Optional(Type.Union([Type.Literal("gitignore"), Type.Literal("exclude")])),
 	autonomous: Type.Optional(PiTeamsAutonomousConfigSchema),
 	limits: Type.Optional(PiTeamsLimitsConfigSchema),
 	runtime: Type.Optional(PiTeamsRuntimeConfigSchema),

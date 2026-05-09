@@ -150,6 +150,7 @@ export interface PiTeamsConfig {
 	executeWorkers?: boolean;
 	notifierIntervalMs?: number;
 	requireCleanWorktreeLeader?: boolean;
+	ignoreMethod?: "gitignore" | "exclude";
 	autonomous?: PiTeamsAutonomousConfig;
 	limits?: CrewLimitsConfig;
 	runtime?: CrewRuntimeConfig;
