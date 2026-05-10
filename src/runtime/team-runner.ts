@@ -13,12 +13,14 @@ import type { WorkflowConfig, WorkflowStep } from "../workflows/workflow-config.
 import { evaluateCrewPolicy, summarizePolicyDecisions } from "./policy-engine.ts";
 import { buildRecoveryLedger } from "./recovery-recipes.ts";
 import { buildTaskGraphIndex, refreshTaskGraphQueues, taskGraphSnapshot } from "./task-graph-scheduler.ts";
+import { buildExecutionPlan as buildDagExecutionPlan, getReadyTasks as getDagReadyTasks, type TaskNode } from "./task-graph.ts";
 import { checkBranchFreshness } from "../worktree/branch-freshness.ts";
 import { aggregateTaskOutputs } from "./task-output-context.ts";
 import { saveCrewAgents } from "./crew-agent-records.ts";
 import { recordsForMaterializedTasks } from "./task-display.ts";
 import { deliverGroupJoin, resolveGroupJoinMode } from "./group-join.ts";
 import { runTeamTask } from "./task-runner.ts";
+import { createWorkflowStateMachine, validatePhasePreconditions, transitionPhase, type PhaseState, type PhaseGuardContext } from "./workflow-state.ts";
 import { executeWithRetry, DEFAULT_RETRY_POLICY, type RetryPolicy } from "./retry-executor.ts";
 import { appendDeadletter } from "./deadletter.ts";
 import type { MetricRegistry } from "../observability/metric-registry.ts";
@@ -510,6 +512,24 @@ function hasPendingMutatingAdaptiveTask(tasks: TeamTaskState[]): boolean {
 	return tasks.some((task) => task.status === "queued" && task.adaptive && isMutatingTask(task));
 }
 
+/**
+ * Check whether any task uses explicit `dependsOn` that would benefit from DAG-based
+ * execution planning. If so, build an execution plan and use `getDagReadyTasks`
+ * to augment the ready-set selection.
+ */
+function dagReadyTaskIds(tasks: TeamTaskState[], completedIds: Set<string>): string[] | null {
+	const hasExplicitDeps = tasks.some((t) => t.dependsOn.length > 0);
+	if (!hasExplicitDeps) return null;
+	const nodes: TaskNode[] = tasks.map((t) => ({
+		id: t.id,
+		dependsOn: t.dependsOn,
+		phase: t.adaptive?.phase ?? t.stepId,
+	}));
+	const plan = buildDagExecutionPlan(nodes);
+	if (plan.hasCycle) return null; // fall back to existing scheduler
+	return getDagReadyTasks(plan, completedIds);
+}
+
 export async function executeTeamRun(input: ExecuteTeamRunInput): Promise<{ manifest: TeamRunManifest; tasks: TeamTaskState[] }> {
 	let workflow = input.workflow;
 	let manifest = updateRunStatus(input.manifest, "running", input.executeWorkers ? "Executing team workflow." : "Creating workflow prompts and placeholder results.");
@@ -584,6 +604,15 @@ async function executeTeamRunCore(
 	const runtimeKind = input.runtime?.kind ?? (input.executeWorkers ? "child-process" : "scaffold");
 	saveCrewAgents(manifest, recordsForMaterializedTasks(manifest, tasks, runtimeKind));
 
+	// Build a workflow phase state machine from workflow steps for precondition tracking.
+	const workflowPhases: PhaseState[] = workflow.steps.map((step): PhaseState => ({
+		name: step.id,
+		status: "pending",
+		inputs: step.reads === false ? [] : Array.isArray(step.reads) ? step.reads : [],
+		outputs: step.output === false ? [] : step.output ? [step.output] : [],
+	}));
+	let wfMachine = createWorkflowStateMachine(workflowPhases);
+
 	while (tasks.some((task) => task.status === "queued")) {
 		if (input.signal?.aborted) {
 			const cancelReason = cancellationReasonFromSignal(input.signal);
@@ -614,13 +643,41 @@ async function executeTeamRunCore(
 		}
 
 		const snapshot = taskGraphSnapshot(tasks, queueIndex);
-		const readyRoles = snapshot.ready.map((taskId) => tasks.find((task) => task.id === taskId)?.role).filter((role): role is string => Boolean(role));
-		const concurrency = resolveBatchConcurrency({ workflowName: workflow.name, workflowMaxConcurrency: workflow.maxConcurrency, teamMaxConcurrency: input.team.maxConcurrency, limitMaxConcurrentWorkers: input.limits?.maxConcurrentWorkers, allowUnboundedConcurrency: input.limits?.allowUnboundedConcurrency, readyCount: snapshot.ready.length, workspaceMode: manifest.workspaceMode, readyRoles });
+
+		// DAG-based execution plan: when tasks have explicit dependsOn, use the
+		// topological wave planner to determine ready tasks. Fall back to the
+		// existing task-graph-scheduler when no explicit deps exist (backward compat).
+		const completedIds = new Set(tasks.filter((t) => t.status === "completed").map((t) => t.id));
+		const dagReady = dagReadyTaskIds(tasks, completedIds);
+		const effectiveReady = dagReady ?? snapshot.ready;
+
+		// Workflow phase precondition check (non-blocking: log warnings only).
+		if (wfMachine.currentPhaseIndex < wfMachine.phases.length) {
+			const completedArtifacts = manifest.artifacts.filter((a) => a.kind === "result" || a.kind === "summary").map((a) => a.path);
+			const previousPhaseStatus = wfMachine.currentPhaseIndex > 0 ? (wfMachine.phases[wfMachine.currentPhaseIndex - 1]?.status ?? "pending") : "completed";
+			const wfContext: PhaseGuardContext = {
+				completedArtifacts,
+				previousPhaseStatus,
+				taskResults: tasks.filter((t) => t.status === "completed").map((t) => ({ taskId: t.id, status: t.status, outputPath: t.resultArtifact?.path })),
+			};
+			const preconditions = validatePhasePreconditions(wfMachine, wfContext);
+			if (!preconditions.ready) {
+				appendEvent(manifest.eventsPath, { type: "workflow.preconditions", runId: manifest.runId, message: `Workflow phase '${wfMachine.phases[wfMachine.currentPhaseIndex]?.name}' is missing inputs: ${preconditions.blocking.join(", ")}`, data: { phaseIndex: wfMachine.currentPhaseIndex, phaseName: wfMachine.phases[wfMachine.currentPhaseIndex]?.name, blocking: preconditions.blocking } });
+			} else {
+				// Advance the machine past completed phases.
+				while (wfMachine.currentPhaseIndex < wfMachine.phases.length && wfMachine.phases[wfMachine.currentPhaseIndex]?.status === "completed") {
+					wfMachine = { ...wfMachine, currentPhaseIndex: wfMachine.currentPhaseIndex + 1 };
+				}
+			}
+		}
+
+		const readyRoles = effectiveReady.map((taskId) => tasks.find((task) => task.id === taskId)?.role).filter((role): role is string => Boolean(role));
+		const concurrency = resolveBatchConcurrency({ workflowName: workflow.name, workflowMaxConcurrency: workflow.maxConcurrency, teamMaxConcurrency: input.team.maxConcurrency, limitMaxConcurrentWorkers: input.limits?.maxConcurrentWorkers, allowUnboundedConcurrency: input.limits?.allowUnboundedConcurrency, readyCount: effectiveReady.length, workspaceMode: manifest.workspaceMode, readyRoles });
 		if (concurrency.reason.includes(";unbounded:")) {
 			appendEvent(manifest.eventsPath, { type: "limits.unbounded", runId: manifest.runId, message: "Unbounded worker concurrency was explicitly enabled for this run.", data: { concurrencyReason: concurrency.reason, maxConcurrent: concurrency.maxConcurrent } });
 		}
 		const approvalPending = isPlanApprovalPending(manifest);
-		const readyIds = approvalPending ? snapshot.ready : snapshot.ready.slice(0, concurrency.selectedCount);
+		const readyIds = approvalPending ? effectiveReady : effectiveReady.slice(0, concurrency.selectedCount);
 		const candidateBatch = readyIds.map((id) => tasks.find((task) => task.id === id)).filter((task): task is TeamTaskState => Boolean(task));
 		const readyBatch = approvalPending ? candidateBatch.filter((task) => !isMutatingTask(task)).slice(0, concurrency.selectedCount) : candidateBatch;
 		if (readyBatch.length === 0) {
@@ -726,6 +783,48 @@ async function executeTeamRunCore(
 		if (results.length === 0) break;
 		manifest = { ...results.at(-1)!.manifest, artifacts: mergeArtifacts([manifest.artifacts, ...results.map((item) => item.manifest.artifacts)].flat()) };
 		tasks = __test__mergeTaskUpdates(tasks, results);
+
+		// Advance workflow phases whose tasks are all in terminal state
+		const terminalStatuses = new Set(["completed", "failed", "skipped", "cancelled"]);
+		const phaseTaskMap = new Map<string, string[]>();
+		for (const task of tasks) {
+			if (!task.stepId) continue;
+			const existing = phaseTaskMap.get(task.stepId) ?? [];
+			existing.push(task.id);
+			phaseTaskMap.set(task.stepId, existing);
+		}
+		for (let pi = wfMachine.currentPhaseIndex; pi < wfMachine.phases.length; pi++) {
+			const phase = wfMachine.phases[pi]!;
+			const phaseTaskIds = phaseTaskMap.get(phase.name) ?? [];
+			if (phaseTaskIds.length === 0) continue;
+			const allTerminal = phaseTaskIds.every((taskId) => {
+				const task = tasks.find((t) => t.id === taskId);
+				return task ? terminalStatuses.has(task.status) : false;
+			});
+			if (!allTerminal) break;
+			if (phase.status !== "completed" && phase.status !== "failed" && phase.status !== "skipped") {
+				const completedArtifacts = manifest.artifacts.filter((a) => a.kind === "result" || a.kind === "summary").map((a) => a.path);
+				const previousPhaseStatus = pi > 0 ? (wfMachine.phases[pi - 1]?.status ?? "pending") : "completed";
+				const wfContext: PhaseGuardContext = {
+					completedArtifacts,
+					previousPhaseStatus,
+					taskResults: tasks.filter((t) => t.status === "completed").map((t) => ({ taskId: t.id, status: t.status, outputPath: t.resultArtifact?.path })),
+				};
+				// Determine phase transition status based on individual task outcomes
+				const phaseTasks = phaseTaskIds.map((taskId) => tasks.find((t) => t.id === taskId)).filter((t): t is NonNullable<typeof t> => t !== undefined);
+				const hasFailedOrCancelled = phaseTasks.some((t) => t.status === "failed" || t.status === "cancelled");
+				const phaseStatus = hasFailedOrCancelled ? "failed" : "completed";
+				const transition = transitionPhase(wfMachine, pi, phaseStatus, wfContext);
+				wfMachine = transition.machine;
+				if (transition.guardResult && !transition.guardResult.allowed) {
+					appendEvent(manifest.eventsPath, { type: "workflow.phase_guard_blocked", runId: manifest.runId, message: `Workflow phase '${phase.name}' guard blocked: ${transition.guardResult.reason ?? "unknown"}`, data: { phaseIndex: pi, phaseName: phase.name, reason: transition.guardResult.reason } });
+					break;
+				}
+				appendEvent(manifest.eventsPath, { type: phaseStatus === "failed" ? "workflow.phase_failed" : "workflow.phase_completed", runId: manifest.runId, message: `Workflow phase '${phase.name}' ${phaseStatus}.`, data: { phaseIndex: pi, phaseStatus } });
+			}
+			wfMachine = { ...wfMachine, currentPhaseIndex: pi + 1 };
+		}
+
 		const cancelledResult = results.find((item) => item.manifest.status === "cancelled");
 		if (cancelledResult || input.signal?.aborted) {
 			const reason = input.signal?.aborted ? cancellationReasonFromSignal(input.signal) : undefined;

@@ -3,6 +3,7 @@ import { loadConfig, updateConfig } from "../../config/config.ts";
 import { configPatchFromConfig } from "../team-tool/config-patch.ts";
 import { result } from "../team-tool/context.ts";
 import type { PiTeamsToolResult } from "../tool-result.ts";
+import { suggestConfigKey } from "../../config/suggestions.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -145,7 +146,11 @@ export function handleSettings(params: { config?: Record<string, unknown> }, ctx
 		const key = args.slice(4).trim();
 		if (!key) return result("Usage: team-settings get <key>", { ...ERR }, true);
 		const value = getNested(effective, key);
-		const note = KNOWN_KEYS.has(key) ? "" : " (unknown key — may not take effect)";
+		let note = KNOWN_KEYS.has(key) ? "" : " (unknown key — may not take effect)";
+		if (!KNOWN_KEYS.has(key)) {
+			const suggestion = suggestConfigKey(key, KNOWN_SORTED);
+			if (suggestion) note += ` (did you mean '${suggestion}'?)`;
+		}
 		return result(`${key} = ${formatValue(value)}${note}`, { ...OK, key, value } as never);
 	}
 
@@ -178,7 +183,9 @@ export function handleSettings(params: { config?: Record<string, unknown> }, ctx
 			const converted = configPatchFromConfig({ config: patch as Record<string, unknown> });
 			const saved = updateConfig(converted, { cwd: ctx.cwd, scope });
 			const warning = KNOWN_KEYS.has(key) ? "" : "\nWarning: unknown key — verify it exists in config schema.";
-			return result(`Set ${key} = ${formatValue(value)}\nPath: ${saved.path}${warning}`, { ...OK, key, value } as never);
+			const suggestion = KNOWN_KEYS.has(key) ? null : suggestConfigKey(key, KNOWN_SORTED);
+			const hint = suggestion ? `\nDid you mean '${suggestion}'?` : "";
+			return result(`Set ${key} = ${formatValue(value)}\nPath: ${saved.path}${warning}${hint}`, { ...OK, key, value } as never);
 		} catch (error) {
 			return result(error instanceof Error ? error.message : String(error), { ...ERR }, true);
 		}

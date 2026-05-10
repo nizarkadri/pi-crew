@@ -10,6 +10,7 @@ import { DEFAULT_PATHS } from "../../config/defaults.ts";
 import type { TeamToolParamsValue } from "../../schema/team-tool-schema.ts";
 import { getPiSpawnCommand } from "../../runtime/pi-spawn.ts";
 import { validateResources } from "../validate-resources.ts";
+import { detectDrift, formatDriftReport, type DriftReport } from "../../config/drift-detector.ts";
 import { TeamToolParams } from "../../schema/team-tool-schema.ts";
 import type { PiTeamsToolResult } from "../tool-result.ts";
 import { configRecord, result, type TeamContext } from "./context.ts";
@@ -112,6 +113,7 @@ export interface TeamDoctorReportInput {
 export interface TeamDoctorReport {
 	text: string;
 	hasErrors: boolean;
+	drift?: DriftReport;
 }
 
 export function buildTeamDoctorReport(input: TeamDoctorReportInput): TeamDoctorReport {
@@ -156,6 +158,23 @@ export function buildTeamDoctorReport(input: TeamDoctorReportInput): TeamDoctorR
 			ok: input.validationErrors === 0,
 			detail: `${input.validationErrors} errors, ${input.validationWarnings} warnings`,
 		}]),
+		section("Drift", () => {
+			const drift = detectDrift(
+				{
+					agents: allAgents(discoverAgents(input.cwd)).map((a) => a.name),
+					teams: allTeams(discoverTeams(input.cwd)).map((t) => t.name),
+					workflows: allWorkflows(discoverWorkflows(input.cwd)).map((w) => w.name),
+				},
+				loadConfig(input.cwd).config,
+			);
+			const driftErrors = drift.items.filter((item) => item.severity === "error").length;
+			const driftWarnings = drift.items.filter((item) => item.severity === "warning").length;
+			return [{
+				label: "config drift",
+				ok: !drift.hasDrift || driftErrors === 0,
+				detail: drift.hasDrift ? `${driftErrors} errors, ${driftWarnings} warnings` : "no drift detected",
+			}];
+		}),
 		section("Schema", () => {
 			const schemaIssues = auditJsonSchema(TeamToolParams);
 			return [{ label: "strict-provider schema", ok: schemaIssues.length === 0, detail: schemaIssues.length ? schemaIssues.slice(0, 3).join("; ") : "team tool schema compatible" }];
@@ -181,7 +200,15 @@ export function buildTeamDoctorReport(input: TeamDoctorReportInput): TeamDoctorR
 	}
 	if (lines.at(-1) === "") lines.pop();
 	const text = lines.join("\n");
-	return { text, hasErrors: sections.some((sectionLines) => sectionLines.some((line) => line.includes("FAIL"))) };
+	const driftResult = detectDrift(
+		{
+			agents: allAgents(discoverAgents(input.cwd)).map((a) => a.name),
+			teams: allTeams(discoverTeams(input.cwd)).map((t) => t.name),
+			workflows: allWorkflows(discoverWorkflows(input.cwd)).map((w) => w.name),
+		},
+		loadConfig(input.cwd).config,
+	);
+	return { text, hasErrors: sections.some((sectionLines) => sectionLines.some((line) => line.includes("FAIL"))), drift: driftResult.hasDrift ? driftResult : undefined };
 }
 
 export function handleDoctor(ctx: TeamContext, params: TeamToolParamsValue = {}): PiTeamsToolResult {
@@ -203,7 +230,7 @@ export function handleDoctor(ctx: TeamContext, params: TeamToolParamsValue = {})
 		}
 	}
 	const validation = validateResources(ctx.cwd);
-	const { text, hasErrors } = buildTeamDoctorReport({
+	const { text, hasErrors, drift } = buildTeamDoctorReport({
 		cwd: ctx.cwd,
 		configPath: loadedConfig.path,
 		configErrors: loadedConfig.error ? [loadedConfig.error] : [],
@@ -213,5 +240,10 @@ export function handleDoctor(ctx: TeamContext, params: TeamToolParamsValue = {})
 		validationWarnings: validation.issues.filter((issue) => issue.level === "warning").length,
 		smokeChildPi,
 	});
-	return result(text, { action: "doctor", status: hasErrors ? "error" : "ok" }, hasErrors);
+	// Append detailed drift section if any drift was detected
+	let finalText = text;
+	if (drift?.hasDrift) {
+		finalText = `${text}\n\nDrift details:\n${formatDriftReport(drift)}`;
+	}
+	return result(finalText, { action: "doctor", status: hasErrors ? "error" : "ok" }, hasErrors);
 }

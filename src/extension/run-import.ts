@@ -4,12 +4,14 @@ import { assertRunBundle } from "./run-bundle-schema.ts";
 import { projectCrewRoot, userCrewRoot } from "../utils/paths.ts";
 import { DEFAULT_PATHS } from "../config/defaults.ts";
 import { assertSafePathId, resolveContainedRelativePath, resolveRealContainedPath } from "../utils/safe-paths.ts";
+import { detectImportConflicts, type ConflictReport } from "../runtime/delta-conflict.ts";
 
 export interface ImportedRunBundleInfo {
 	runId: string;
 	importedAt: string;
 	bundlePath: string;
 	summaryPath: string;
+	conflictReport?: ConflictReport;
 }
 
 function importRoot(cwd: string, scope: "project" | "user"): string {
@@ -23,6 +25,22 @@ export function importRunBundle(cwd: string, bundlePath: string, scope: "project
 	assertRunBundle(raw);
 	const runId = assertSafePathId("runId", raw.manifest.runId);
 	const importedAt = new Date().toISOString();
+
+	// Non-blocking conflict detection: compare incoming bundle against any existing state.
+	let conflictReport: ConflictReport | undefined;
+	try {
+		const existingManifestPath = path.join(importRoot(cwd, scope), runId, "run-export.json");
+		if (fs.existsSync(existingManifestPath)) {
+			const existingRaw = JSON.parse(fs.readFileSync(existingManifestPath, "utf-8")) as { manifest?: Record<string, unknown>; tasks?: unknown[] };
+			conflictReport = detectImportConflicts(
+				{ manifest: raw.manifest as unknown as Record<string, unknown>, tasks: raw.tasks as unknown[] },
+				{ manifest: existingRaw.manifest, tasks: existingRaw.tasks },
+			);
+		}
+	} catch {
+		// Conflict detection is best-effort; do not block import on failure.
+	}
+
 	const importsRoot = importRoot(cwd, scope);
 	fs.mkdirSync(importsRoot, { recursive: true });
 	if (fs.lstatSync(importsRoot).isSymbolicLink()) throw new Error(`Invalid import root: ${importsRoot}`);
@@ -56,5 +74,5 @@ export function importRunBundle(cwd: string, bundlePath: string, scope: "project
 		...raw.tasks.map((task) => `- ${task.id}: ${task.status} (${task.role} -> ${task.agent})${task.error ? ` - ${task.error}` : ""}`),
 		"",
 	].join("\n"), "utf-8");
-	return { runId, importedAt, bundlePath: targetJson, summaryPath: targetSummary };
+	return { runId, importedAt, bundlePath: targetJson, summaryPath: targetSummary, ...(conflictReport?.hasConflicts ? { conflictReport } : {}) };
 }

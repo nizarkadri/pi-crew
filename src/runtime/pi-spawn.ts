@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 
@@ -9,6 +10,48 @@ export interface PiSpawnCommand {
 
 function isRunnableNodeScript(filePath: string): boolean {
 	return fs.existsSync(filePath) && /\.(?:mjs|cjs|js)$/i.test(filePath);
+}
+
+/**
+ * Check that a resolved path is within known safe prefixes.
+ * Allowed prefixes: npm global bin (APPDATA/npm), project node_modules/.bin,
+ * or the current process's execPath directory.
+ */
+function isWithinAllowedPrefixes(resolvedPath: string): boolean {
+	const normalized = path.resolve(resolvedPath).toLowerCase();
+
+	const allowedPrefixes: string[] = [];
+
+	// Current process execPath directory (e.g. node installation)
+	try {
+		const execDir = path.dirname(fs.realpathSync.native(process.execPath));
+		allowedPrefixes.push(execDir.toLowerCase());
+	} catch { /* ignore */ }
+
+	// npm global bin via APPDATA
+	if (process.env.APPDATA) {
+		allowedPrefixes.push(path.join(process.env.APPDATA, "npm").toLowerCase());
+	}
+
+	// Project-local node_modules/.bin
+	try {
+		const projectBin = path.resolve("node_modules", ".bin");
+		allowedPrefixes.push(projectBin.toLowerCase());
+	} catch { /* ignore */ }
+
+	// User home npm-global
+	try {
+		const homeNpm = path.join(os.homedir(), ".npm-global", "bin");
+		allowedPrefixes.push(homeNpm.toLowerCase());
+	} catch { /* ignore */ }
+
+	// User home .local/bin
+	try {
+		const homeLocal = path.join(os.homedir(), ".local", "bin");
+		allowedPrefixes.push(homeLocal.toLowerCase());
+	} catch { /* ignore */ }
+
+	return allowedPrefixes.some((prefix) => normalized.startsWith(prefix));
 }
 
 function resolvePiPackageRoot(): string | undefined {
@@ -61,9 +104,6 @@ function findPiPackageJsonFrom(startDir: string): string | undefined {
 }
 
 function resolvePiCliScript(): string | undefined {
-	const explicit = process.env.PI_TEAMS_PI_BIN?.trim();
-	if (explicit && isRunnableNodeScript(explicit)) return explicit;
-
 	const argv1 = process.argv[1];
 	if (argv1) {
 		const argvPath = path.isAbsolute(argv1) ? argv1 : path.resolve(argv1);
@@ -87,14 +127,24 @@ function resolvePiCliScript(): string | undefined {
 
 function validateExplicitBin(explicit: string): string | undefined {
 	const resolved = path.resolve(explicit);
-	// Reject paths outside the project or user directories
-	if (resolved.includes("..")) return undefined;
 	if (!fs.existsSync(resolved)) return undefined;
+	// Reject paths outside allowed safe prefixes
+	if (!isWithinAllowedPrefixes(resolved)) {
+		throw new Error(
+			`PI_TEAMS_PI_BIN path '${resolved}' is outside allowed prefixes. ` +
+			`Allowed: npm global bin, project node_modules/.bin, APPDATA/npm, or process execPath directory.`,
+		);
+	}
 	// Reject if symlink points outside expected directories
 	try {
 		const real = fs.realpathSync(resolved);
-		if (real.includes("..")) return undefined;
-	} catch {
+		if (!isWithinAllowedPrefixes(real)) {
+			throw new Error(
+				`PI_TEAMS_PI_BIN symlink target '${real}' is outside allowed prefixes.`,
+			);
+		}
+	} catch (e) {
+		if (e instanceof Error && e.message.includes("allowed prefixes")) throw e;
 		return undefined;
 	}
 	return resolved;

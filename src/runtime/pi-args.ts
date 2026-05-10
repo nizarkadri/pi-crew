@@ -57,6 +57,28 @@ export function checkCrewDepth(inputMaxDepth?: number, env: NodeJS.ProcessEnv = 
 	return { depth, maxDepth, blocked: depth >= maxDepth };
 }
 
+/**
+ * Create a safe temp directory with symlink protection.
+ * 1. mkdtempSync to create the directory
+ * 2. lstatSync to verify it is not a symlink (TOCTOU safety)
+ * 3. realpathSync to resolve the canonical path
+ */
+function createSafeTempDir(base: string, prefix: string): string {
+	if (!fs.existsSync(base)) fs.mkdirSync(base, { recursive: true });
+	const rawTempDir = fs.mkdtempSync(path.join(base, prefix));
+	try {
+		const stat = fs.lstatSync(rawTempDir);
+		if (stat.isSymbolicLink()) throw new Error("temp dir is a symlink");
+	} catch (e) {
+		if (e instanceof Error && e.message.includes("symlink")) {
+			fs.rmSync(rawTempDir, { recursive: true, force: true });
+			throw new Error("Refusing to use symlinked temp directory.");
+		}
+		throw e;
+	}
+	return fs.realpathSync(rawTempDir);
+}
+
 export function buildPiWorkerArgs(input: BuildPiWorkerArgsInput): BuildPiWorkerArgsResult {
 	const args = ["--mode", "json", "-p"];
 	if (input.sessionEnabled === false) args.push("--no-session");
@@ -83,23 +105,23 @@ export function buildPiWorkerArgs(input: BuildPiWorkerArgsInput): BuildPiWorkerA
 
 	let tempDir: string | undefined;
 	if (input.agent.systemPrompt) {
-		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-crew-${process.pid}-`));
-		// Verify temp dir is not a symlink (TOCTOU safety)
-		try {
-			const stat = fs.lstatSync(tempDir);
-			if (stat.isSymbolicLink()) throw new Error("temp dir is a symlink");
-		} catch {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-			tempDir = undefined;
-			throw new Error("Refusing to use symlinked temp directory.");
-		}
+		// On Windows, prefer a subdirectory within the user's profile over system temp
+		const tmpBase = process.platform === "win32" && os.homedir()
+			? path.join(os.homedir(), ".pi-crew", "tmp")
+			: os.tmpdir();
+		tempDir = createSafeTempDir(tmpBase, `pi-crew-${process.pid}-`);
 		const promptPath = path.join(tempDir, `${input.agent.name.replace(/[^\w.-]/g, "_")}.md`);
 		fs.writeFileSync(promptPath, input.agent.systemPrompt, { mode: 0o600 });
 		args.push(input.agent.systemPromptMode === "append" ? "--append-system-prompt" : "--system-prompt", promptPath);
 	}
 
 	if (input.task.length > TASK_ARG_LIMIT) {
-		if (!tempDir) tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-crew-${process.pid}-`));
+		if (!tempDir) {
+			const tmpBase = process.platform === "win32" && os.homedir()
+				? path.join(os.homedir(), ".pi-crew", "tmp")
+				: os.tmpdir();
+			tempDir = createSafeTempDir(tmpBase, `pi-crew-${process.pid}-`);
+		}
 		const taskPath = path.join(tempDir, "task.md");
 		fs.writeFileSync(taskPath, input.task, { mode: 0o600 });
 		args.push(`@${taskPath}`);

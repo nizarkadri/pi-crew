@@ -15,6 +15,7 @@ import { requestRender, setExtensionWidget } from "./pi-ui-compat.ts";
 import type { RunSnapshotCache, RunUiSnapshot } from "./snapshot-types.ts";
 import { runEventBus } from "./run-event-bus.ts";
 import { DEFAULT_UI } from "../config/defaults.ts";
+import { computePhaseProgress, formatPhaseProgressLine } from "../runtime/phase-progress.ts";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TOOL_LABELS: Record<string, string> = {
@@ -163,11 +164,13 @@ export function buildCrewWidgetLines(cwd: string, frame = 0, maxLines = 8, provi
 	if (!runs.length) return [];
 	const runningGlyph = SPINNER[frame % SPINNER.length] ?? SPINNER[0];
 	const lines: string[] = [widgetHeader(runs, runningGlyph, maxLines, notificationCount)];
-	for (const { run, agents } of runs) {
+	for (const { run, agents, snapshot } of runs) {
 		const activeAgents = agents.filter((item) => item.status === "running" || item.status === "queued" || item.status === "waiting");
 		const completed = agents.filter((agent) => agent.status === "completed").length;
 		const runGlyph = iconForStatus(run.status, { runningGlyph });
-		lines.push(`├─ ${runGlyph} ${shortRunLabel(run)} · ${completed}/${agents.length} done · ${run.runId.slice(-8)}`);
+		const phaseLine = snapshot ? formatPhaseProgressLine(computePhaseProgress(snapshot.tasks)) : "";
+		const progressPart = phaseLine ? `${phaseLine}` : `${completed}/${agents.length} done`;
+		lines.push(`├─ ${runGlyph} ${shortRunLabel(run)} · ${progressPart} · ${run.runId.slice(-8)}`);
 		const visibleAgents = activeAgents.slice(0, MAX_AGENTS_DISPLAY);
 		for (const [index, agent] of visibleAgents.entries()) {
 			const last = index === visibleAgents.length - 1 && activeAgents.length <= MAX_AGENTS_DISPLAY;

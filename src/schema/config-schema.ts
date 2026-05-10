@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+export { validateWithSeverity, type ValidationSeverity, type ValidationMode, type ValidationFinding, type ValidationOutcome } from "./validation-types.ts";
 
 export const PiTeamsAutonomyProfileSchema = Type.Union([
 	Type.Literal("manual"),
@@ -155,3 +156,13 @@ export const PiTeamsConfigSchema = Type.Object({
 	otlp: Type.Optional(PiTeamsOtlpConfigSchema),
 	ui: Type.Optional(PiTeamsUiConfigSchema),
 }, { additionalProperties: false });
+
+import { validateWithSeverity as _validateWithSeverity, type ValidationMode, type ValidationOutcome } from "./validation-types.ts";
+
+/**
+ * Convenience wrapper — validate a raw config value with severity-tagged findings.
+ * Delegates to `validateWithSeverity` from validation-types.ts.
+ */
+export function validateConfig(raw: unknown, mode?: ValidationMode): ValidationOutcome {
+	return _validateWithSeverity(raw, mode);
+}

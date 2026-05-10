@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { PiTeamsAutonomyProfileSchema, PiTeamsConfigSchema } from "../schema/config-schema.ts";
+import { suggestConfigKey } from "./suggestions.ts";
 import { projectCrewRoot, projectPiRoot } from "../utils/paths.ts";
 
 export type PiTeamsAutonomyProfile = "manual" | "suggested" | "assisted" | "aggressive";
@@ -226,10 +227,21 @@ function errorPathFromValidation(error: unknown): string {
 	return "config";
 }
 
+/** Known top-level config keys from the schema — used for fuzzy suggestions. */
+const KNOWN_TOP_LEVEL_KEYS = Object.keys(PiTeamsConfigSchema.properties ?? {}) as string[];
+
 function validateConfigWithWarnings(raw: unknown): string[] {
 	if (!Value.Check(PiTeamsConfigSchema, raw)) {
 		return [...Value.Errors(PiTeamsConfigSchema, raw)].map((error) => {
-			return `${errorPathFromValidation(error)}: ${(error as { message?: unknown }).message ?? "invalid value"}`;
+			const path = errorPathFromValidation(error);
+			const message = (error as { message?: unknown }).message ?? "invalid value";
+			// Enhance "additionalProperties" errors with fuzzy suggestions
+			if ((error as { keyword?: unknown }).keyword === "additionalProperties") {
+				const offendingKey = path.split("/").pop() ?? path;
+				const suggestion = suggestConfigKey(offendingKey, KNOWN_TOP_LEVEL_KEYS);
+				if (suggestion) return `${path}: ${message} (did you mean '${suggestion}'?)`;
+			}
+			return `${path}: ${message}`;
 		});
 	}
 	return [];
