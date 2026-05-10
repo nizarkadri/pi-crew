@@ -8,6 +8,7 @@ import { DEFAULT_CACHE, DEFAULT_PATHS } from "../config/defaults.ts";
 import { createRunId, createTaskId } from "../utils/ids.ts";
 import { findRepoRoot, projectCrewRoot, userCrewRoot } from "../utils/paths.ts";
 import { assertSafePathId, resolveContainedRelativePath, resolveRealContainedPath } from "../utils/safe-paths.ts";
+import { withRunLockSync, withRunLock } from "./locks.ts";
 import type { TeamConfig } from "../teams/team-config.ts";
 import type { WorkflowConfig } from "../workflows/workflow-config.ts";
 
@@ -180,23 +181,31 @@ export function createRunManifest(params: {
 }
 
 export function saveRunManifest(manifest: TeamRunManifest): void {
-	atomicWriteJson(path.join(manifest.stateRoot, "manifest.json"), manifest);
-	invalidateRunCache(manifest.stateRoot);
+	withRunLockSync(manifest, () => {
+		atomicWriteJson(path.join(manifest.stateRoot, "manifest.json"), manifest);
+		invalidateRunCache(manifest.stateRoot);
+	});
 }
 
 export async function saveRunManifestAsync(manifest: TeamRunManifest): Promise<void> {
-	await atomicWriteJsonAsync(path.join(manifest.stateRoot, "manifest.json"), manifest);
-	invalidateRunCache(manifest.stateRoot);
+	await withRunLock(manifest, async () => {
+		await atomicWriteJsonAsync(path.join(manifest.stateRoot, "manifest.json"), manifest);
+		invalidateRunCache(manifest.stateRoot);
+	});
 }
 
 export function saveRunTasks(manifest: TeamRunManifest, tasks: TeamTaskState[]): void {
-	atomicWriteJson(manifest.tasksPath, tasks);
-	invalidateRunCache(manifest.stateRoot);
+	withRunLockSync(manifest, () => {
+		atomicWriteJson(manifest.tasksPath, tasks);
+		invalidateRunCache(manifest.stateRoot);
+	});
 }
 
 export async function saveRunTasksAsync(manifest: TeamRunManifest, tasks: TeamTaskState[]): Promise<void> {
-	await atomicWriteJsonAsync(manifest.tasksPath, tasks);
-	invalidateRunCache(manifest.stateRoot);
+	await withRunLock(manifest, async () => {
+		await atomicWriteJsonAsync(manifest.tasksPath, tasks);
+		invalidateRunCache(manifest.stateRoot);
+	});
 }
 
 /**
@@ -208,11 +217,13 @@ export async function saveRunTasksAsync(manifest: TeamRunManifest, tasks: TeamTa
  * inconsistent state on next session start.
  */
 export async function saveManifestAndTasksAtomic(manifest: TeamRunManifest, tasks: TeamTaskState[]): Promise<void> {
-	await Promise.all([
-		atomicWriteJsonAsync(path.join(manifest.stateRoot, "manifest.json"), manifest),
-		atomicWriteJsonAsync(manifest.tasksPath, tasks),
-	]);
-	invalidateRunCache(manifest.stateRoot);
+	await withRunLock(manifest, async () => {
+		await Promise.all([
+			atomicWriteJsonAsync(path.join(manifest.stateRoot, "manifest.json"), manifest),
+			atomicWriteJsonAsync(manifest.tasksPath, tasks),
+		]);
+		invalidateRunCache(manifest.stateRoot);
+	});
 }
 
 export interface UpdateRunStatusOptions {

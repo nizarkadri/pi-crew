@@ -51,7 +51,7 @@ function isRetryableRenameError(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && "code" in error && RETRYABLE_RENAME_CODES.has(String((error as NodeJS.ErrnoException).code)));
 }
 
-export function __test__renameWithRetry(tempPath: string, filePath: string, retries = 5, rename: (oldPath: string, newPath: string) => void = fs.renameSync): void {
+export function __test__renameWithRetry(tempPath: string, filePath: string, retries = 10, rename: (oldPath: string, newPath: string) => void = fs.renameSync): void {
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
@@ -60,13 +60,15 @@ export function __test__renameWithRetry(tempPath: string, filePath: string, retr
 		} catch (error) {
 			lastError = error;
 			if (!isRetryableRenameError(error) || attempt === retries) break;
-			sleepSync(Math.min(250, 10 * 2 ** attempt));
+			// Exponential backoff: 10ms, 20ms, 40ms, ..., capped at 500ms
+			// Windows EPERM on rename can take longer when multiple processes contend
+			sleepSync(Math.min(500, 10 * 2 ** attempt));
 		}
 	}
 	throw lastError;
 }
 
-export async function __test__renameWithRetryAsync(tempPath: string, filePath: string, retries = 5, rename: (oldPath: string, newPath: string) => Promise<void> = (source, destination) => fs.promises.rename(source, destination)): Promise<void> {
+export async function __test__renameWithRetryAsync(tempPath: string, filePath: string, retries = 10, rename: (oldPath: string, newPath: string) => Promise<void> = (source, destination) => fs.promises.rename(source, destination)): Promise<void> {
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
@@ -75,7 +77,7 @@ export async function __test__renameWithRetryAsync(tempPath: string, filePath: s
 		} catch (error) {
 			lastError = error;
 			if (!isRetryableRenameError(error) || attempt === retries) break;
-			await sleep(Math.min(250, 10 * 2 ** attempt));
+			await sleep(Math.min(500, 10 * 2 ** attempt));
 		}
 	}
 	throw lastError;
