@@ -1,6 +1,15 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { MetricRegistry } from "../observability/metric-registry.ts";
-import { handleTeamTool } from "../extension/team-tool.ts";
+// Lazy-loaded: team-tool.ts pulls in entire runtime chain.
+import type { handleTeamTool as HandleTeamToolFn } from "../extension/team-tool.ts";
+let _cachedHandleTeamTool: typeof HandleTeamToolFn | undefined;
+async function handleTeamTool(params: Parameters<typeof HandleTeamToolFn>[0], ctx: Parameters<typeof HandleTeamToolFn>[1]): Promise<Awaited<ReturnType<typeof HandleTeamToolFn>>> {
+	if (!_cachedHandleTeamTool) {
+		const mod = await import("../extension/team-tool.ts");
+		_cachedHandleTeamTool = mod.handleTeamTool;
+	}
+	return _cachedHandleTeamTool(params, ctx);
+}
 import { isToolError, textFromToolResult } from "../extension/tool-result.ts";
 import { loadRunManifestById, saveRunTasks } from "../state/state-store.ts";
 import { appendEvent } from "../state/event-log.ts";

@@ -4,7 +4,17 @@ import { appendEvent } from "../state/event-log.ts";
 import { loadRunManifestById, saveRunManifest, updateRunStatus } from "../state/state-store.ts";
 import { allWorkflows, discoverWorkflows } from "../workflows/discover-workflows.ts";
 import { loadConfig } from "../config/config.ts";
-import { executeTeamRun } from "./team-runner.ts";
+// Heavy runtime — lazy-loaded to avoid pulling team-runner into background-runner
+// at module load time. Only needed when a background run actually starts.
+import type { executeTeamRun as ExecuteTeamRunFn } from "./team-runner.ts";
+let _cachedExecuteTeamRun: typeof ExecuteTeamRunFn | undefined;
+async function executeTeamRun(...args: Parameters<typeof ExecuteTeamRunFn>): Promise<Awaited<ReturnType<typeof ExecuteTeamRunFn>>> {
+	if (!_cachedExecuteTeamRun) {
+		const mod = await import("./team-runner.ts");
+		_cachedExecuteTeamRun = mod.executeTeamRun;
+	}
+	return _cachedExecuteTeamRun(...args);
+}
 import { resolveCrewRuntime, runtimeResolutionState } from "./runtime-resolver.ts";
 import { directTeamAndWorkflowFromRun } from "./direct-run.ts";
 import { expandParallelResearchWorkflow } from "./parallel-research.ts";

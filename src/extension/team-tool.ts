@@ -26,7 +26,17 @@ import { formatValidationReport, validateResources } from "./validate-resources.
 import { formatRecommendation, recommendTeam } from "./team-recommendation.ts";
 import type { PiTeamsToolResult } from "./tool-result.ts";
 import type { ArtifactDescriptor, TeamRunManifest, TeamTaskState } from "../state/types.ts";
-import { executeTeamRun } from "../runtime/team-runner.ts";
+// Heavy runtime — lazy-loaded to avoid 1.4s import cost at extension registration.
+// executeTeamRun is only called when a team run actually executes.
+import type { executeTeamRun as ExecuteTeamRunFn } from "../runtime/team-runner.ts";
+let _cachedExecuteTeamRun: typeof ExecuteTeamRunFn | undefined;
+async function executeTeamRun(...args: Parameters<typeof ExecuteTeamRunFn>): Promise<Awaited<ReturnType<typeof ExecuteTeamRunFn>>> {
+	if (!_cachedExecuteTeamRun) {
+		const mod = await import("../runtime/team-runner.ts");
+		_cachedExecuteTeamRun = mod.executeTeamRun;
+	}
+	return _cachedExecuteTeamRun(...args);
+}
 import { checkProcessLiveness, isActiveRunStatus } from "../runtime/process-status.ts";
 import { saveCrewAgents, readCrewAgents, recordFromTask } from "../runtime/crew-agent-records.ts";
 import { resolveCrewRuntime, runtimeResolutionState } from "../runtime/runtime-resolver.ts";

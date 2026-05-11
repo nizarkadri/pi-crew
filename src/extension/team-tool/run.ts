@@ -8,7 +8,18 @@ import { registerActiveRun, unregisterActiveRun } from "../../state/active-run-r
 import { createRunManifest, loadRunManifestById, updateRunStatus } from "../../state/state-store.ts";
 import { atomicWriteJson } from "../../state/atomic-write.ts";
 import { validateWorkflowForTeam } from "../../workflows/validate-workflow.ts";
-import { executeTeamRun } from "../../runtime/team-runner.ts";
+// Heavy runtime — lazy-loaded to avoid 1.4s import cost at extension registration.
+import type { executeTeamRun as ExecuteTeamRunFn } from "../../runtime/team-runner.ts";
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- type-only import for TS inference
+const _typeCheck: typeof ExecuteTeamRunFn = null as never as typeof ExecuteTeamRunFn;
+let _cachedExecuteTeamRun: typeof ExecuteTeamRunFn | undefined;
+async function executeTeamRun(...args: Parameters<typeof ExecuteTeamRunFn>): Promise<Awaited<ReturnType<typeof ExecuteTeamRunFn>>> {
+	if (!_cachedExecuteTeamRun) {
+		const mod = await import("../../runtime/team-runner.ts");
+		_cachedExecuteTeamRun = mod.executeTeamRun;
+	}
+	return _cachedExecuteTeamRun(...args);
+}
 import { spawnBackgroundTeamRun } from "../../subagents/async-entry.ts";
 import { appendEvent, readEvents } from "../../state/event-log.ts";
 import { resolveCrewRuntime, runtimeResolutionState } from "../../runtime/runtime-resolver.ts";

@@ -1,6 +1,15 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { TeamToolParamsValue } from "../schema/team-tool-schema.ts";
-import { handleTeamTool } from "./team-tool.ts";
+// Lazy-loaded to avoid pulling team-tool.ts (and its entire runtime chain) into module load.
+import type { handleTeamTool as HandleTeamToolFn } from "./team-tool.ts";
+let _cachedHandleTeamTool: typeof HandleTeamToolFn | undefined;
+async function handleTeamTool(params: Parameters<typeof HandleTeamToolFn>[0], ctx: Parameters<typeof HandleTeamToolFn>[1]): Promise<Awaited<ReturnType<typeof HandleTeamToolFn>>> {
+	if (!_cachedHandleTeamTool) {
+		const mod = await import("./team-tool.ts");
+		_cachedHandleTeamTool = mod.handleTeamTool;
+	}
+	return _cachedHandleTeamTool(params, ctx);
+}
 import { parseLiveControlRealtimeMessage, publishLiveControlRealtime } from "../runtime/live-control-realtime.ts";
 
 export interface EventBusLike {

@@ -1,6 +1,15 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { loadConfig } from "../../config/config.ts";
-import { handleTeamTool } from "../team-tool.ts";
+// Lazy-loaded: team-tool.ts pulls in entire runtime chain (1.4s+).
+import type { handleTeamTool as HandleTeamToolFn } from "../team-tool.ts";
+let _cachedHandleTeamTool: typeof HandleTeamToolFn | undefined;
+async function handleTeamTool(params: Parameters<typeof HandleTeamToolFn>[0], ctx: Parameters<typeof HandleTeamToolFn>[1]): Promise<Awaited<ReturnType<typeof HandleTeamToolFn>>> {
+	if (!_cachedHandleTeamTool) {
+		const mod = await import("../team-tool.ts");
+		_cachedHandleTeamTool = mod.handleTeamTool;
+	}
+	return _cachedHandleTeamTool(params, ctx);
+}
 import { withSessionId } from "../team-tool/context.ts";
 import { piTeamsHelp } from "../help.ts";
 import { handleTeamManagerCommand } from "../team-manager-command.ts";

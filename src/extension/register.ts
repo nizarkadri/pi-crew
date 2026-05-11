@@ -416,46 +416,56 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 
 		// Auto-cancel orphaned runs from dead sessions
 		const currentSessionId = (typeof ctx === "object" && ctx !== null && "sessionId" in ctx ? (ctx as Record<string, unknown>).sessionId : undefined) as string | undefined;
-		if (currentSessionId) {
+
+		// Defer ALL heavy cleanup to after the session_start handler returns.
+		// These operations involve synchronous directory scanning (readdirSync, readFileSync)
+		// which can take 100ms–1s+ on Windows. They MUST NOT block the session_start event.
+		setTimeout(() => {
+			if (cleanedUp || sessionGeneration !== ownerGeneration) return; // session switched while we waited
+
+			// Auto-cancel orphaned runs
+			if (currentSessionId) {
+				try {
+					const { cancelled } = cancelOrphanedRuns(ctx.cwd, getManifestCache(ctx.cwd), currentSessionId);
+					if (cancelled.length > 0) {
+						notifyOperator({ id: `orphan_cleanup`, severity: "info", source: "crash-recovery", title: `Cleaned up ${cancelled.length} orphaned run(s)`, body: `Runs from previous sessions were auto-cancelled: ${cancelled.join(", ")}` });
+					}
+				} catch (error) {
+					logInternalError("register.sessionStart.orphanCleanup", error);
+				}
+			}
+
+			// Global purge of stale active-run-index entries
 			try {
-				const { cancelled } = cancelOrphanedRuns(ctx.cwd, getManifestCache(ctx.cwd), currentSessionId);
-				if (cancelled.length > 0) {
-					notifyOperator({ id: `orphan_cleanup`, severity: "info", source: "crash-recovery", title: `Cleaned up ${cancelled.length} orphaned run(s)`, body: `Runs from previous sessions were auto-cancelled: ${cancelled.join(", ")}` });
+				const { purged } = purgeStaleActiveRunIndex();
+				if (purged.length > 0) {
+					notifyOperator({ id: `active_index_purge`, severity: "info", source: "crash-recovery", title: `Purged ${purged.length} stale active-run-index entr${purged.length === 1 ? "y" : "ies"}`, body: `Cleaned up global active run index` });
 				}
 			} catch (error) {
-				logInternalError("register.sessionStart.orphanCleanup", error);
+				logInternalError("register.sessionStart.globalIndexPurge", error);
 			}
-		}
 
-		// Global purge of stale active-run-index entries (temp dirs, dead workers, etc.)
-		try {
-			const { purged } = purgeStaleActiveRunIndex();
-			if (purged.length > 0) {
-				notifyOperator({ id: `active_index_purge`, severity: "info", source: "crash-recovery", title: `Purged ${purged.length} stale active-run-index entr${purged.length === 1 ? "y" : "ies"}`, body: `Cleaned up global active run index` });
+			// Auto-prune finished project-level run directories (keep 10 most recent)
+			try {
+				const { removed } = pruneFinishedRuns(ctx.cwd, 10);
+				if (removed.length > 0) {
+					notifyOperator({ id: `auto_prune_project`, severity: "info", source: "run-maintenance", title: `Auto-pruned ${removed.length} finished project run(s)`, body: `Removed old finished runs: ${removed.join(", ")}` });
+				}
+			} catch (error) {
+				logInternalError("register.sessionStart.autoPruneProject", error);
 			}
-		} catch (error) {
-			logInternalError("register.sessionStart.globalIndexPurge", error);
-		}
 
-		// Auto-prune finished project-level run directories (keep 10 most recent)
-		try {
-			const { removed } = pruneFinishedRuns(ctx.cwd, 10);
-			if (removed.length > 0) {
-				notifyOperator({ id: `auto_prune_project`, severity: "info", source: "run-maintenance", title: `Auto-pruned ${removed.length} finished project run(s)`, body: `Removed old finished runs: ${removed.join(", ")}` });
+			// Auto-prune finished user-level run directories (keep 10 most recent)
+			try {
+				const { removed } = pruneUserLevelRuns(10);
+				if (removed.length > 0) {
+					notifyOperator({ id: `auto_prune_user`, severity: "info", source: "run-maintenance", title: `Auto-pruned ${removed.length} finished user-level run(s)`, body: `Removed old finished runs: ${removed.join(", ")}` });
+				}
+			} catch (error) {
+				logInternalError("register.sessionStart.autoPruneUser", error);
 			}
-		} catch (error) {
-			logInternalError("register.sessionStart.autoPruneProject", error);
-		}
+		}, 0);
 
-		// Auto-prune finished user-level run directories (keep 10 most recent)
-		try {
-			const { removed } = pruneUserLevelRuns(10);
-			if (removed.length > 0) {
-				notifyOperator({ id: `auto_prune_user`, severity: "info", source: "run-maintenance", title: `Auto-pruned ${removed.length} finished user-level run(s)`, body: `Removed old finished runs: ${removed.join(", ")}` });
-			}
-		} catch (error) {
-			logInternalError("register.sessionStart.autoPruneUser", error);
-		}
 
 		const loadedConfig = loadConfig(ctx.cwd);
 		autoRecoveryLast.clear();

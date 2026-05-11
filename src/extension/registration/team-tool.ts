@@ -9,7 +9,16 @@ import type { createManifestCache } from "../../runtime/manifest-cache.ts";
 import type { createRunSnapshotCache } from "../../ui/run-snapshot-cache.ts";
 import type { MetricRegistry } from "../../observability/metric-registry.ts";
 import { resolveRealContainedPath } from "../../utils/safe-paths.ts";
-import { handleTeamTool } from "../team-tool.ts";
+// Team tool handler — lazy-loaded because team-tool.ts imports many modules
+import type { handleTeamTool as HandleTeamToolFn } from "../team-tool.ts";
+let _cachedHandleTeamTool: typeof HandleTeamToolFn | undefined;
+async function handleTeamTool(params: Parameters<typeof HandleTeamToolFn>[0], ctx: Parameters<typeof HandleTeamToolFn>[1]): Promise<ReturnType<typeof HandleTeamToolFn>> {
+	if (!_cachedHandleTeamTool) {
+		const mod = await import("../team-tool.ts");
+		_cachedHandleTeamTool = mod.handleTeamTool;
+	}
+	return _cachedHandleTeamTool(params, ctx);
+}
 import { withSessionId } from "../team-tool/context.ts";
 import { toolResult } from "../tool-result.ts";
 
