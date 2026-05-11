@@ -55,7 +55,7 @@ function resolveScriptPath(config: PostCheckConfig): string | undefined {
  * passes by default with a note.
  *
  * **Security note:** The script path is user-configurable (config or env var)
- * and executed with full inherited environment. Only use with trusted script
+ * and executed with minimal environment (PATH, HOME, USER, LANG). Only use with trusted script
  * paths. No path containment validation is performed.
  *
  * @param config - Post-check configuration (script path and timeout)

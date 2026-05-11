@@ -112,7 +112,7 @@ function isScriptRunnable(scriptPath: string): boolean {
  * Captures stdout (capped at 8KB) and stderr. Enforces a 30-second timeout.
  *
  * **Security note:** The script path is user-configurable and executed with
- * full inherited environment. Only use with trusted script paths from
+ * minimal environment (PATH, HOME, USER, LANG). Only use with trusted script paths from
  * workspace-owned configuration. No path containment validation is performed.
  *
  * @param payload - Structured hook payload
