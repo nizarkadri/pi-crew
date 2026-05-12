@@ -26,11 +26,10 @@ test("runtime resolver lets config disable workers", async () => {
 	assert.match(runtime.reason ?? "", /disabled/);
 });
 
-test("runtime resolver with PI_CREW_EXECUTE_WORKERS=1 prefers live-session, falls back to child-process", async () => {
-	const runtime = await resolveCrewRuntime({}, { PI_CREW_EXECUTE_WORKERS: "1" } as NodeJS.ProcessEnv);
-	// "auto" mode prefers live-session; the env var enables worker execution
-	// but doesn't force child-process. The resolved kind depends on SDK availability.
-	assert.ok(["live-session", "child-process"].includes(runtime.kind), `expected live-session or child-process, got ${runtime.kind}`);
+test("runtime resolver with PI_TEAMS_MOCK_CHILD_PI forces child-process", async () => {
+	const runtime = await resolveCrewRuntime({}, { PI_TEAMS_MOCK_CHILD_PI: "json-success" } as NodeJS.ProcessEnv);
+	assert.equal(runtime.kind, "child-process");
+	assert.match(runtime.reason ?? "", /mock/i);
 });
 
 test("runtime resolver can request live-session with safe fallback", async () => {
