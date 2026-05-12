@@ -76,6 +76,7 @@ async function main(): Promise<void> {
 		manifest = result.manifest;
 		tasks = result.tasks;
 		appendEvent(manifest.eventsPath, { type: "async.completed", runId: manifest.runId, data: { status: manifest.status, tasks: tasks.length } });
+		if (manifest.status === "failed" || manifest.status === "cancelled" || manifest.status === "blocked") process.exitCode = 1;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		manifest = updateRunStatus(manifest, "failed", message);

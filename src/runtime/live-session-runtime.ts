@@ -4,7 +4,7 @@ import type { AgentConfig } from "../agents/agent-config.ts";
 import type { CrewRuntimeConfig } from "../config/config.ts";
 import type { TeamRunManifest, TeamTaskState, UsageState } from "../state/types.ts";
 import { buildMemoryBlock } from "./agent-memory.ts";
-import { registerLiveAgent, updateLiveAgentStatus } from "./live-agent-manager.ts";
+import { registerLiveAgent, terminateLiveAgent, updateLiveAgentStatus } from "./live-agent-manager.ts";
 import { applyLiveAgentControlRequest, applyLiveAgentControlRequests, type LiveAgentControlCursor } from "./live-agent-control.ts";
 import { subscribeLiveControlRealtime } from "./live-control-realtime.ts";
 import { eventToSidechainType, sidechainOutputPath, writeSidechainEntry } from "./sidechain-output.ts";
@@ -82,6 +82,7 @@ type LiveSessionLike = {
 	prompt?: (text: string, options?: Record<string, unknown>) => Promise<void>;
 	steer?: (text: string) => Promise<void>;
 	abort?: () => Promise<void> | void;
+	dispose?: () => void;
 	getStats?: () => unknown;
 	stats?: unknown;
 	bindExtensions?: (bindings?: Record<string, unknown>) => Promise<void>;
@@ -320,18 +321,7 @@ export async function runLiveSessionTask(input: LiveSessionSpawnInput): Promise<
 	const collectedJsonEvents: Record<string, unknown>[] = [];
 	let yieldResult: YieldResult | undefined;
 
-	// Task 4: Error boundary hardening — per-agent AbortController for unhandled rejections
-	const agentAbort = new AbortController();
 	const agentId = `${input.manifest.runId}:${input.task.id}`;
-	let agentAbortFired = false;
-	let unhandledRejectionError: unknown;
-	const rejectionHandler = (err: unknown) => {
-		unhandledRejectionError = err;
-		agentAbortFired = true;
-		logInternalError("live-session.unhandled", err, `agentId=${agentId}`);
-		agentAbort.abort();
-	};
-	process.on("unhandledRejection", rejectionHandler);
 
 	try {
 		const agentDir = typeof mod.getAgentDir === "function" ? mod.getAgentDir() : undefined;
@@ -469,24 +459,13 @@ export async function runLiveSessionTask(input: LiveSessionSpawnInput): Promise<
 				const timer = setTimeout(() => reject(new Error(`Live-session timed out after ${sessionTimeoutMs}ms`)), sessionTimeoutMs);
 				timer.unref();
 			});
-			// Also race against agentAbort (unhandled rejection) and input.signal
-			const abortRacePromise = new Promise<void>((_, reject) => {
-				const abortHandler = () => reject(new Error("Agent aborted"));
-				agentAbort.signal.addEventListener("abort", abortHandler, { once: true });
-			});
 			try {
-				await Promise.race([promptPromise, timeoutPromise, abortRacePromise]);
+				await Promise.race([promptPromise, timeoutPromise]);
 			} catch (promptError) {
 				const msg = promptError instanceof Error ? promptError.message : String(promptError);
 				if (msg.includes("timed out")) {
 					await session.abort?.();
 					updateLiveAgentStatus(agentId, "failed");
-					return { available: true, exitCode: 1, stdout: stdout.trim(), stderr: msg, jsonEvents, error: msg };
-				}
-				if (msg === "Agent aborted") {
-					await session.abort?.();
-					updateLiveAgentStatus(agentId, "failed");
-					input.onEvent?.({ type: "live-session.crash", agentId, error: String(unhandledRejectionError ?? "unhandled rejection"), recovered: true });
 					return { available: true, exitCode: 1, stdout: stdout.trim(), stderr: msg, jsonEvents, error: msg };
 				}
 				throw promptError;
@@ -587,7 +566,7 @@ export async function runLiveSessionTask(input: LiveSessionSpawnInput): Promise<
 
 		const usage = usageFromStats(typeof session.getStats === "function" ? session.getStats() : session.stats);
 		updateLiveAgentStatus(agentId, "completed");
-	return { available: true, exitCode: 0, stdout: stdout.trim(), stderr: created.modelFallbackMessage ?? "", jsonEvents, usage, yieldResult };
+		return { available: true, exitCode: 0, stdout: stdout.trim(), stderr: created.modelFallbackMessage ?? "", jsonEvents, usage, yieldResult };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 
@@ -604,17 +583,11 @@ export async function runLiveSessionTask(input: LiveSessionSpawnInput): Promise<
 		updateLiveAgentStatus(`${input.manifest.runId}:${input.task.id}`, "failed");
 		return { available: true, exitCode: 1, stdout: stdout.trim(), stderr: message, jsonEvents, error: message };
 	} finally {
-		// Task 4: Remove unhandledRejection handler first
-		process.off("unhandledRejection", rejectionHandler);
-
 		// H6: Unsubscribe listeners FIRST before clearing timer to prevent race
 		unsubscribe?.();
 		unsubscribeControlRealtime?.();
 		if (controlTimer) clearInterval(controlTimer);
-
-		// Task 4: Session cleanup — abort if session exists and task didn't complete normally
-		if (session && agentAbortFired) {			await session.abort?.();
-		}
+		if (input.signal?.aborted) await terminateLiveAgent(agentId, "cancelled");
 
 		// Phase 8: Emit final health snapshot
 		try {

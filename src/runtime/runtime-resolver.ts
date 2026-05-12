@@ -69,9 +69,8 @@ export async function resolveCrewRuntime(config: PiTeamsConfig, env: NodeJS.Proc
 	if (requestedMode === "scaffold") return scaffoldCaps(requestedMode, undefined, "explicit_dry_run");
 	if (workersDisabled) return scaffoldCaps(requestedMode, "Child worker execution disabled by config/env. Set runtime.mode=scaffold or executeWorkers=false only for dry runs.", "blocked");
 	if (requestedMode === "child-process") return childCaps(requestedMode);
-	// When a child-process mock is active (tests), force child-process runtime regardless of mode.
-	// This prevents the "auto" default from routing to live-session where the mock is inactive.
-	if (env.PI_TEAMS_MOCK_CHILD_PI) return childCaps(requestedMode, "PI_TEAMS_MOCK_CHILD_PI mock forces child-process runtime.");
+	// When a child-process mock is active (tests), force auto-mode to child-process where the mock is active.
+	if (requestedMode === "auto" && env.PI_TEAMS_MOCK_CHILD_PI) return childCaps(requestedMode, "PI_TEAMS_MOCK_CHILD_PI mock forces child-process runtime in auto mode.");
 	if (requestedMode === "live-session" || requestedMode === "auto") {
 		const live = await isLiveSessionRuntimeAvailable(1500, env);
 		if (live.available) return liveCaps(requestedMode);

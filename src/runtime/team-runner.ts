@@ -3,6 +3,7 @@ import type { AgentConfig } from "../agents/agent-config.ts";
 import type { CrewLimitsConfig, CrewRuntimeConfig, CrewReliabilityConfig } from "../config/config.ts";
 import type { CrewRuntimeCapabilities } from "./runtime-resolver.ts";
 import type { CrewRuntimeKind } from "./crew-agent-runtime.ts";
+import { resolveTaskRuntimeKind } from "./runtime-policy.ts";
 import { writeArtifact } from "../state/artifact-store.ts";
 import { executeHook, appendHookEvent } from "../hooks/registry.ts";
 import { appendEvent } from "../state/event-log.ts";
@@ -17,10 +18,11 @@ import { buildTaskGraphIndex, refreshTaskGraphQueues, taskGraphSnapshot } from "
 import { buildExecutionPlan as buildDagExecutionPlan, getReadyTasks as getDagReadyTasks, type TaskNode } from "./task-graph.ts";
 import { checkBranchFreshness } from "../worktree/branch-freshness.ts";
 import { aggregateTaskOutputs } from "./task-output-context.ts";
-import { saveCrewAgents } from "./crew-agent-records.ts";
+import { readCrewAgents, saveCrewAgents } from "./crew-agent-records.ts";
 import { recordsForMaterializedTasks } from "./task-display.ts";
 import { deliverGroupJoin, resolveGroupJoinMode } from "./group-join.ts";
 import { runTeamTask } from "./task-runner.ts";
+import { terminateLiveAgentsForRun } from "./live-agent-manager.ts";
 import { createWorkflowStateMachine, validatePhasePreconditions, transitionPhase, type PhaseState, type PhaseGuardContext } from "./workflow-state.ts";
 import { executeWithRetry, DEFAULT_RETRY_POLICY, type RetryPolicy } from "./retry-executor.ts";
 import { appendDeadletter } from "./deadletter.ts";
@@ -542,19 +544,6 @@ function dagReadyTaskIds(tasks: TeamTaskState[], completedIds: Set<string>): str
 	return getDagReadyTasks(plan, completedIds);
 }
 
-/**
- * Resolve the effective runtime kind for a given task role using isolation policy.
- * - scaffold is never overridden — scaffold stays scaffold.
- * - If the role appears in `isolationPolicy.isolatedRoles`, use child-process (crash isolation).
- * - Otherwise, fall back to the global `globalKind`.
- */
-function resolveTaskRuntimeKind(globalKind: CrewRuntimeKind, role: string, isolationPolicy: CrewRuntimeConfig["isolationPolicy"]): CrewRuntimeKind {
-	if (globalKind === "scaffold") return "scaffold";
-	const isolatedRoles = isolationPolicy?.isolatedRoles ?? [];
-	if (isolatedRoles.includes(role)) return "child-process";
-	return globalKind;
-}
-
 export async function executeTeamRun(input: ExecuteTeamRunInput): Promise<{ manifest: TeamRunManifest; tasks: TeamTaskState[] }> {
 	let workflow = input.workflow;
 	let manifest = updateRunStatus(input.manifest, "running", input.executeWorkers ? "Executing team workflow." : "Creating workflow prompts and placeholder results.");
@@ -562,19 +551,33 @@ export async function executeTeamRun(input: ExecuteTeamRunInput): Promise<{ mani
 	try {
 		return await executeTeamRunCore(input, manifest, workflow);
 	} catch (error) {
-		// P1: Catch unhandled errors — ensure manifest is set to "failed" so it doesn't stay "running" forever.
+		// P1: Catch unhandled errors — ensure manifest/tasks/agents are terminal so they don't stay "running" forever.
 		const message = error instanceof Error ? error.message : String(error);
+		const loaded = loadRunManifestById(input.manifest.cwd, input.manifest.runId);
+		const freshManifest = loaded?.manifest ?? manifest;
+		const freshTasks = refreshTaskGraphQueues(loaded?.tasks ?? input.tasks);
+		const failedAt = new Date().toISOString();
+		const tasks = freshTasks.map((task) =>
+			task.status === "running" || task.status === "queued" || task.status === "waiting"
+				? { ...task, status: "failed" as const, finishedAt: failedAt, error: message }
+				: task,
+		);
+		manifest = freshManifest;
 		try {
+			await terminateLiveAgentsForRun(manifest.runId);
+			await saveRunTasksAsync(manifest, tasks);
+			const existingRuntimeByTask = new Map(readCrewAgents(manifest).map((agent) => [agent.taskId, agent.runtime]));
+			const globalRuntime = input.runtime?.kind ?? "child-process";
+			const runtimeForAgent = (agent: ReturnType<typeof recordsForMaterializedTasks>[number]): CrewRuntimeKind => {
+				const task = tasks.find((item) => item.id === agent.taskId);
+				return existingRuntimeByTask.get(agent.taskId) ?? resolveTaskRuntimeKind(globalRuntime, task?.role ?? agent.role, input.runtimeConfig?.isolationPolicy);
+			};
+			saveCrewAgents(manifest, recordsForMaterializedTasks(manifest, tasks, globalRuntime).map((agent) => ({ ...agent, runtime: runtimeForAgent(agent) })));
 			manifest = updateRunStatus(manifest, "failed", `Unhandled error in team runner: ${message}`);
 			await saveRunManifestAsync(manifest);
 		} catch {
 			// Best-effort — state write may also fail
 		}
-		const tasks = refreshTaskGraphQueues(input.tasks).map((task) =>
-			task.status === "running" || task.status === "queued" || task.status === "waiting"
-				? { ...task, status: "failed" as const, finishedAt: new Date().toISOString(), error: message }
-				: task,
-		);
 		return { manifest, tasks };
 	}
 }

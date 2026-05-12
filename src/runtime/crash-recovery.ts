@@ -13,6 +13,7 @@ import { executeHook, appendHookEvent } from "../hooks/registry.ts";
 import { activeRunEntries, unregisterActiveRun, readActiveRunRegistry } from "../state/active-run-registry.ts";
 import { resolveRealContainedPath } from "../utils/safe-paths.ts";
 import { projectCrewRoot, userCrewRoot } from "../utils/paths.ts";
+import { terminateLiveAgentsForRun } from "./live-agent-manager.ts";
 
 export interface RecoveryPlan {
 	runId: string;
@@ -132,7 +133,12 @@ export function cancelOrphanedRuns(
 			continue;
 		}
 
+		// Orphan confirmed — mark durable state terminal before best-effort live-agent abort.
+		// terminateLiveAgent unregisters handles before awaiting abort(), and live-executor's
+		// isCurrent() checks durable terminal state before writing progress.
+
 		// Orphan confirmed — cancel all running tasks
+		let cancelledRun = false;
 		withRunLockSync(loaded.manifest, () => {
 			const fresh = loadRunManifestById(cwd, manifest.runId);
 			if (!fresh || fresh.manifest.status !== "running") return;
@@ -149,7 +155,9 @@ export function cancelOrphanedRuns(
 			updateRunStatus(fresh.manifest, "cancelled", `Orphaned run: owner session ${ownerId} no longer exists`);
 			appendEvent(fresh.manifest.eventsPath, { type: "crew.run.orphan_cancelled", runId: manifest.runId, message: `Auto-cancelled orphaned run (owner: ${ownerId})`, data: { ownerSessionId: ownerId, cancelledTasks: repairedTasks.filter((t) => t.status === "cancelled").length } });
 			cancelled.push(manifest.runId);
+			cancelledRun = true;
 		});
+		if (cancelledRun) void terminateLiveAgentsForRun(manifest.runId, "cancelled").catch(() => {});
 	}
 
 	return { cancelled, skipped };

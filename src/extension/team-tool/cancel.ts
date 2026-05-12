@@ -4,6 +4,7 @@ import { loadRunManifestById, saveRunTasks, updateRunStatus } from "../../state/
 import { saveCrewAgents, recordFromTask } from "../../runtime/crew-agent-records.ts";
 import { writeForegroundInterruptRequest } from "../../runtime/foreground-control.ts";
 import { cancellationReasonFromUnknown, buildSyntheticTerminalEvidence, type CancellationReason } from "../../runtime/cancellation.ts";
+import { terminateLiveAgentsForRun } from "../../runtime/live-agent-manager.ts";
 import { appendEvent } from "../../state/event-log.ts";
 import { logInternalError } from "../../utils/internal-error.ts";
 import { executeHook, appendHookEvent } from "../../hooks/registry.ts";
@@ -149,6 +150,7 @@ export async function handleCancel(params: TeamToolParamsValue, ctx: TeamContext
 	if (hookReport.outcome === "block") {
 		return result(`Cancel blocked by hook: ${hookReport.reason ?? "before_cancel hook blocked the operation."}`, { action: "cancel", status: "error", runId: loaded.manifest.runId }, true);
 	}
+	await terminateLiveAgentsForRun(loaded.manifest.runId, "cancelled");
 
 	return withRunLockSync(loaded.manifest, () => {
 		if ((loaded.manifest.status === "completed" || loaded.manifest.status === "cancelled") && !params.force) return result(`Run ${loaded.manifest.runId} is already ${loaded.manifest.status}; nothing to cancel. Use force: true to mark it cancelled anyway.`, { action: "cancel", status: "ok", runId: loaded.manifest.runId, artifactsRoot: loaded.manifest.artifactsRoot });
@@ -176,7 +178,7 @@ export async function handleCancel(params: TeamToolParamsValue, ctx: TeamContext
 		});
 		saveRunTasks(loaded.manifest, tasks);
 		try {
-			saveCrewAgents(loaded.manifest, tasks.map((task) => recordFromTask(loaded.manifest, task, "child-process")));
+			saveCrewAgents(loaded.manifest, tasks.map((task) => recordFromTask(loaded.manifest, task, loaded.manifest.runtimeResolution?.kind ?? "child-process")));
 		} catch (error) {
 			logInternalError("team-tool.handleCancel.crewAgents", error, `runId=${loaded.manifest.runId}`);
 		}

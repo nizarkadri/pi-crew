@@ -3,10 +3,14 @@ import assert from "node:assert/strict";
 import { resolveCrewRuntime } from "../../src/runtime/runtime-resolver.ts";
 import { probeLiveSessionRuntime } from "../../src/runtime/live-session-runtime.ts";
 
-test("runtime resolver defaults to live-session (with fallback to child-process when SDK unavailable)", async () => {
+test("runtime resolver defaults auto to live-session when available", async () => {
+	const runtime = await resolveCrewRuntime({}, { PI_CREW_MOCK_LIVE_SESSION: "success" } as NodeJS.ProcessEnv);
+	assert.equal(runtime.kind, "live-session");
+	assert.equal(runtime.requestedMode, "auto");
+});
+
+test("runtime resolver auto falls back to child-process when live-session is unavailable", async () => {
 	const runtime = await resolveCrewRuntime({}, {} as NodeJS.ProcessEnv);
-	// "auto" mode now prefers live-session when the Pi SDK is available;
-	// falls back to child-process when it isn't.
 	assert.ok(["live-session", "child-process"].includes(runtime.kind), `expected live-session or child-process, got ${runtime.kind}`);
 	assert.equal(runtime.requestedMode, "auto");
 });
@@ -26,10 +30,19 @@ test("runtime resolver lets config disable workers", async () => {
 	assert.match(runtime.reason ?? "", /disabled/);
 });
 
-test("runtime resolver with PI_TEAMS_MOCK_CHILD_PI forces child-process", async () => {
+test("runtime resolver with PI_TEAMS_MOCK_CHILD_PI forces child-process in auto mode", async () => {
 	const runtime = await resolveCrewRuntime({}, { PI_TEAMS_MOCK_CHILD_PI: "json-success" } as NodeJS.ProcessEnv);
 	assert.equal(runtime.kind, "child-process");
 	assert.match(runtime.reason ?? "", /mock/i);
+});
+
+test("runtime resolver lets explicit live-session override child-process mock", async () => {
+	const runtime = await resolveCrewRuntime(
+		{ runtime: { mode: "live-session" }, executeWorkers: true },
+		{ PI_TEAMS_MOCK_CHILD_PI: "json-success", PI_CREW_MOCK_LIVE_SESSION: "success" } as NodeJS.ProcessEnv,
+	);
+	assert.equal(runtime.kind, "live-session");
+	assert.equal(runtime.requestedMode, "live-session");
 });
 
 test("runtime resolver can request live-session with safe fallback", async () => {

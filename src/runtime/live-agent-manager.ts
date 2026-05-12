@@ -5,6 +5,7 @@ type LiveSessionHandle = {
 	steer?: (text: string) => Promise<void>;
 	prompt?: (text: string, options?: Record<string, unknown>) => Promise<void>;
 	abort?: () => Promise<void> | void;
+	dispose?: () => void;
 };
 
 export interface LiveAgentHandle {
@@ -48,12 +49,44 @@ export function updateLiveAgentStatus(agentId: string, status: CrewAgentRecord["
 	handle.updatedAt = new Date().toISOString();
 }
 
+export function removeLiveAgentHandle(agentId: string): LiveAgentHandle | undefined {
+	const handle = liveAgents.get(agentId);
+	if (!handle) return undefined;
+	liveAgents.delete(agentId);
+	handle.session.dispose?.();
+	return handle;
+}
+
+export async function terminateLiveAgent(agentIdOrTaskId: string, status: CrewAgentRecord["status"] = "stopped"): Promise<LiveAgentHandle | undefined> {
+	const handle = getLiveAgent(agentIdOrTaskId);
+	if (!handle) return undefined;
+	handle.status = status;
+	handle.updatedAt = new Date().toISOString();
+	liveAgents.delete(handle.agentId);
+	try {
+		await handle.session.abort?.();
+	} finally {
+		handle.session.dispose?.();
+	}
+	return handle;
+}
+
+export async function terminateLiveAgentsForRun(runId: string, status: CrewAgentRecord["status"] = "failed"): Promise<number> {
+	const agents = [...liveAgents.values()].filter((agent) => agent.runId === runId);
+	await Promise.all(agents.map((agent) => terminateLiveAgent(agent.agentId, status)));
+	return agents.length;
+}
+
 export function getLiveAgent(agentIdOrTaskId: string): LiveAgentHandle | undefined {
 	return liveAgents.get(agentIdOrTaskId) ?? [...liveAgents.values()].find((entry) => entry.taskId === agentIdOrTaskId);
 }
 
 export function listLiveAgents(): LiveAgentHandle[] {
 	return [...liveAgents.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export function listActiveLiveAgents(): LiveAgentHandle[] {
+	return listLiveAgents().filter((agent) => agent.status === "running" || agent.status === "queued" || agent.status === "waiting");
 }
 
 export async function steerLiveAgent(agentIdOrTaskId: string, message: string): Promise<LiveAgentHandle> {
@@ -81,13 +114,9 @@ export async function followUpLiveAgent(agentIdOrTaskId: string, prompt: string)
 }
 
 export async function stopLiveAgent(agentIdOrTaskId: string): Promise<LiveAgentHandle> {
-	const handle = getLiveAgent(agentIdOrTaskId);
-	if (!handle) throw new Error(`Live agent '${agentIdOrTaskId}' is not registered in this process.`);
-	if (typeof handle.session.abort !== "function") throw new Error(`Live agent '${agentIdOrTaskId}' does not expose abort().`);
-	await handle.session.abort();
-	handle.status = "stopped";
-	handle.updatedAt = new Date().toISOString();
-	return handle;
+	const stopped = await terminateLiveAgent(agentIdOrTaskId, "stopped");
+	if (!stopped) throw new Error(`Live agent '${agentIdOrTaskId}' is not registered in this process.`);
+	return stopped;
 }
 
 export async function resumeLiveAgent(agentIdOrTaskId: string, prompt: string): Promise<LiveAgentHandle> {

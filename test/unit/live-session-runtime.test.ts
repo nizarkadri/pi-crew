@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { handleTeamTool } from "../../src/extension/team-tool.ts";
+import { clearLiveAgentsForTest, listLiveAgents } from "../../src/runtime/live-agent-manager.ts";
 import { runLiveSessionTask } from "../../src/runtime/live-session-runtime.ts";
 import { runLiveTask } from "../../src/runtime/task-runner/live-executor.ts";
 import { createRunManifest } from "../../src/state/state-store.ts";
@@ -31,6 +32,8 @@ const workflow: WorkflowConfig = {
 	filePath: "live-test.workflow.md",
 	steps: [{ id: "execute", role: "executor", task: "do" }],
 };
+
+test.afterEach(() => clearLiveAgentsForTest());
 
 test("mock live-session suppresses owner callbacks when stale", async () => {
 	const previousMock = process.env.PI_CREW_MOCK_LIVE_SESSION;
@@ -83,6 +86,27 @@ test("live task production path passes stale owner guard", async () => {
 	}
 });
 
+test("mock live-session keeps terminal live agents for resume but excludes them from active API", async () => {
+	const previousMock = process.env.PI_CREW_MOCK_LIVE_SESSION;
+	process.env.PI_CREW_MOCK_LIVE_SESSION = "success";
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-crew-live-session-cleanup-"));
+	try {
+		const result = await runLiveSessionTask({
+			manifest: { runId: "run_cleanup", stateRoot: path.join(cwd, ".crew", "state", "runs", "run_cleanup") } as never,
+			task: { id: "task_cleanup", role: "executor", cwd } as never,
+			step: { id: "execute", role: "executor", task: "do" } as never,
+			agent: { name: "executor", description: "Executor", source: "builtin", filePath: "executor.md", systemPrompt: "Do it" },
+			prompt: "do it",
+		});
+		assert.equal(result.exitCode, 0);
+		assert.equal(listLiveAgents().length, 1);
+		assert.equal(listLiveAgents()[0]?.status, "completed");
+	} finally {
+		restoreEnv("PI_CREW_MOCK_LIVE_SESSION", previousMock);
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("run can use experimental live-session runtime with durable transcript hooks", async () => {
 	const previousEnable = process.env.PI_CREW_ENABLE_EXPERIMENTAL_LIVE_SESSION;
 	const previousMock = process.env.PI_CREW_MOCK_LIVE_SESSION;
@@ -102,9 +126,7 @@ test("run can use experimental live-session runtime with durable transcript hook
 		const transcript = await handleTeamTool({ action: "api", runId, config: { operation: "read-agent-transcript", agentId: agents[0].taskId } }, { cwd });
 		assert.match(firstText(transcript), /Mock live-session success/);
 		const liveAgents = await handleTeamTool({ action: "api", runId, config: { operation: "list-live-agents" } }, { cwd });
-		assert.match(firstText(liveAgents), /team_/);
-		const steer = await handleTeamTool({ action: "api", runId, config: { operation: "steer-agent", agentId: agents[0].taskId, message: "wrap up" } }, { cwd });
-		assert.equal(steer.isError, false);
+		assert.equal(firstText(liveAgents), "[]");
 		const sidechainPath = path.join(cwd, ".crew", "state", "runs", runId, "agents", agents[0].taskId, "sidechain.output.jsonl");
 		assert.match(fs.readFileSync(sidechainPath, "utf-8"), /"isSidechain":true/);
 	} finally {

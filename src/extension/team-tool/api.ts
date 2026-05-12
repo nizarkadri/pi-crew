@@ -14,7 +14,7 @@ import { touchWorkerHeartbeat } from "../../runtime/worker-heartbeat.ts";
 import { agentOutputPath, readCrewAgentEventsCursor, readCrewAgentStatus, readCrewAgents } from "../../runtime/crew-agent-records.ts";
 import { buildAgentDashboard, readAgentOutput } from "../../runtime/agent-observability.ts";
 import { readForegroundControlStatus, writeForegroundInterruptRequest } from "../../runtime/foreground-control.ts";
-import { followUpLiveAgent, getLiveAgent, listLiveAgents, resumeLiveAgent, steerLiveAgent, stopLiveAgent } from "../../subagents/live/manager.ts";
+import { followUpLiveAgent, getLiveAgent, listActiveLiveAgents, resumeLiveAgent, steerLiveAgent, stopLiveAgent } from "../../subagents/live/manager.ts";
 import { appendLiveAgentControlRequest } from "../../subagents/live/control.ts";
 import { liveControlRealtimeMessage, publishLiveControlRealtime } from "../../subagents/live/realtime.ts";
 import { buildCapabilityInventory } from "../../runtime/capability-inventory.ts";
@@ -223,7 +223,7 @@ export async function handleApi(params: TeamToolParamsValue, ctx: TeamContext): 
 		return result(JSON.stringify({ agentId: agent.id, mailboxMessage: message }, null, 2), { action: "api", status: "ok", runId: loaded.manifest.runId, artifactsRoot: loaded.manifest.artifactsRoot });
 	}
 	if (operation === "list-live-agents") {
-		return result(JSON.stringify(listLiveAgents().filter((agent) => agent.runId === loaded.manifest.runId), null, 2), { action: "api", status: "ok", runId: loaded.manifest.runId, artifactsRoot: loaded.manifest.artifactsRoot });
+		return result(JSON.stringify(listActiveLiveAgents().filter((agent) => agent.runId === loaded.manifest.runId), null, 2), { action: "api", status: "ok", runId: loaded.manifest.runId, artifactsRoot: loaded.manifest.artifactsRoot });
 	}
 	if (operation === "steer-agent" || operation === "follow-up-agent" || operation === "stop-agent" || operation === "resume-agent" || operation === "interrupt-agent") {
 		const agentId = typeof cfg.agentId === "string" ? cfg.agentId : undefined;
