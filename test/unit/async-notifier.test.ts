@@ -5,7 +5,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { markDeadAsyncRunIfNeeded, startAsyncRunNotifier, stopAsyncRunNotifier, type AsyncNotifierState } from "../../src/extension/async-notifier.ts";
 import { appendEvent, readEvents } from "../../src/state/event-log.ts";
-import { createRunManifest, saveRunManifest } from "../../src/state/state-store.ts";
+import { createRunManifest, loadRunManifestById, saveRunManifest, saveRunTasks } from "../../src/state/state-store.ts";
+import { readCrewAgents, saveCrewAgents, recordFromTask } from "../../src/runtime/crew-agent-records.ts";
 import type { TeamConfig } from "../../src/teams/team-config.ts";
 import type { WorkflowConfig } from "../../src/workflows/workflow-config.ts";
 
@@ -81,10 +82,16 @@ test("async notifier marks quiet dead background runner as failed", () => {
 		const manifest = { ...created.manifest, status: "running" as const, updatedAt: oldTime, async: { pid: 999_999_999, logPath: path.join(created.manifest.stateRoot, "background.log"), spawnedAt: oldTime } };
 		saveRunManifest(manifest);
 		appendEvent(manifest.eventsPath, { type: "async.started", runId: manifest.runId, data: { pid: manifest.async.pid } });
+		const runningTasks = created.tasks.map((task) => ({ ...task, status: "running" as const, startedAt: oldTime }));
+		saveRunTasks(manifest, runningTasks);
+		saveCrewAgents(manifest, runningTasks.map((task) => recordFromTask(manifest, task, "live-session")));
 		const marked = markDeadAsyncRunIfNeeded(manifest, Date.now() + 60_000, 30_000);
 		assert.ok(marked);
 		assert.equal(marked.status, "failed");
 		assert.equal(readEvents(marked.eventsPath).some((event) => event.type === "async.died"), true);
+		const repaired = loadRunManifestById(cwd, manifest.runId);
+		assert.equal(repaired?.tasks[0]?.status, "failed");
+		assert.equal(readCrewAgents(manifest)[0]?.status, "failed");
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}

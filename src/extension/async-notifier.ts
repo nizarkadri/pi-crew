@@ -1,8 +1,9 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { appendEvent, readEvents, type TeamEvent } from "../state/event-log.ts";
 import { checkProcessLiveness, isActiveRunStatus } from "../runtime/process-status.ts";
-import { updateRunStatus } from "../state/state-store.ts";
-import type { TeamRunManifest } from "../state/types.ts";
+import { loadRunManifestById, saveRunTasks, updateRunStatus } from "../state/state-store.ts";
+import type { TeamRunManifest, TeamTaskState } from "../state/types.ts";
+import { readCrewAgents, saveCrewAgents } from "../runtime/crew-agent-records.ts";
 import { listRuns } from "./run-index.ts";
 
 export interface AsyncNotifierState {
@@ -38,6 +39,27 @@ function latestEventAgeMs(events: TeamEvent[], now = Date.now()): number {
 	return Number.isFinite(time) ? now - time : Number.POSITIVE_INFINITY;
 }
 
+function isTaskActive(task: TeamTaskState): boolean {
+	return task.status === "running" || task.status === "queued" || task.status === "waiting";
+}
+
+function markActiveTasksAndAgentsFailed(run: TeamRunManifest, message: string): void {
+	const loaded = loadRunManifestById(run.cwd, run.runId);
+	const tasks = loaded?.tasks ?? [];
+	const failedAt = new Date().toISOString();
+	if (tasks.some(isTaskActive)) {
+		saveRunTasks(run, tasks.map((task) => isTaskActive(task) ? { ...task, status: "failed", finishedAt: failedAt, error: message } : task));
+	}
+	const agents = readCrewAgents(run);
+	if (agents.some((agent) => agent.status === "running" || agent.status === "queued" || agent.status === "waiting")) {
+		saveCrewAgents(run, agents.map((agent) =>
+			agent.status === "running" || agent.status === "queued" || agent.status === "waiting"
+				? { ...agent, status: "failed", completedAt: failedAt, error: message }
+				: agent,
+		));
+	}
+}
+
 export function markDeadAsyncRunIfNeeded(run: TeamRunManifest, now = Date.now(), quietMs = 30_000): TeamRunManifest | undefined {
 	if (!run.async || !isActiveRunStatus(run.status)) return undefined;
 	const liveness = checkProcessLiveness(run.async.pid);
@@ -47,6 +69,7 @@ export function markDeadAsyncRunIfNeeded(run: TeamRunManifest, now = Date.now(),
 	if (latestEventAgeMs(events, now) < quietMs) return undefined;
 	const message = `Background runner died unexpectedly; check background.log (${liveness.detail}).`;
 	const failed = updateRunStatus(run, "failed", message);
+	markActiveTasksAndAgentsFailed(failed, message);
 	appendEvent(failed.eventsPath, { type: "async.died", runId: failed.runId, message, data: { pid: run.async.pid, detail: liveness.detail } });
 	return failed;
 }
