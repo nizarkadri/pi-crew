@@ -24,6 +24,7 @@ export const TeamToolParams = Type.Object({
 		Type.Literal("list"),
 		Type.Literal("get"),
 		Type.Literal("cancel"),
+		Type.Literal("retry"),
 		Type.Literal("resume"),
 		Type.Literal("respond"),
 		Type.Literal("create"),

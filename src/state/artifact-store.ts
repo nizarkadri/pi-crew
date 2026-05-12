@@ -112,10 +112,10 @@ export function writeArtifact(artifactsRoot: string, options: ArtifactWriteOptio
 	resolveRealContainedPath(path.dirname(artifactsRoot), path.basename(artifactsRoot));
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	resolveRealContainedPath(artifactsRoot, path.dirname(filePath));
-	// Compute hash on original content for integrity verification.
-	const contentHash = hashContent(options.content);
 	const content = redactSecretString(options.content);
 	atomicWriteFile(filePath, content);
+	// Compute hash on written bytes for integrity verification.
+	const contentHash = hashContent(content);
 	const stats = fs.statSync(filePath);
 	return {
 		kind: options.kind,

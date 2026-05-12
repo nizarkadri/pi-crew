@@ -6,6 +6,7 @@ import { subprocessToolRegistry, type SubprocessToolEvent } from "./subprocess-t
 let _ajv: Awaited<ReturnType<typeof getAjvInternal>> | null | undefined;
 
 async function getAjvInternal() {
+	// LAZY: AJV is an optional heavy validator — only load on first use.
 	const mod = await import("ajv");
 	const AjvCtor = ("default" in mod ? (mod as Record<string, unknown>).default : mod) as unknown as new (opts: Record<string, unknown>) => { compile: (schema: unknown) => { (data: unknown): boolean; errors?: unknown[] }; errorsText: (errors?: unknown[]) => string };
 	return new AjvCtor({ allErrors: true, strict: false, logger: false });

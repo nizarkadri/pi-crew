@@ -51,7 +51,7 @@ function isRetryableRenameError(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && "code" in error && RETRYABLE_RENAME_CODES.has(String((error as NodeJS.ErrnoException).code)));
 }
 
-export function __test__renameWithRetry(tempPath: string, filePath: string, retries = 10, rename: (oldPath: string, newPath: string) => void = fs.renameSync): void {
+export function renameWithRetry(tempPath: string, filePath: string, retries = 10, rename: (oldPath: string, newPath: string) => void = fs.renameSync): void {
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
@@ -68,7 +68,10 @@ export function __test__renameWithRetry(tempPath: string, filePath: string, retr
 	throw lastError;
 }
 
-export async function __test__renameWithRetryAsync(tempPath: string, filePath: string, retries = 10, rename: (oldPath: string, newPath: string) => Promise<void> = (source, destination) => fs.promises.rename(source, destination)): Promise<void> {
+/** Test alias for renameWithRetry. */
+export const __test__renameWithRetry = renameWithRetry;
+
+export async function renameWithRetryAsync(tempPath: string, filePath: string, retries = 10, rename: (oldPath: string, newPath: string) => Promise<void> = (source, destination) => fs.promises.rename(source, destination)): Promise<void> {
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
@@ -82,6 +85,9 @@ export async function __test__renameWithRetryAsync(tempPath: string, filePath: s
 	}
 	throw lastError;
 }
+
+/** Test alias for renameWithRetryAsync. */
+export const __test__renameWithRetryAsync = renameWithRetryAsync;
 
 export function atomicWriteFile(filePath: string, content: string): void {
 	if (!isSymlinkSafePath(filePath)) throw new Error(`Refusing to write: target is a symlink or inside untrusted directory: ${filePath}`);
@@ -99,7 +105,7 @@ export function atomicWriteFile(filePath: string, content: string): void {
 		}
 		fs.writeSync(fd, content, undefined, "utf-8");
 		fs.closeSync(fd);
-		__test__renameWithRetry(tempPath, filePath);
+		renameWithRetry(tempPath, filePath);
 	} catch (error) {
 		try {
 			fs.rmSync(tempPath, { force: true });
@@ -127,7 +133,7 @@ export async function atomicWriteFileAsync(filePath: string, content: string): P
 		await fd.writeFile(content, "utf-8");
 		await fd.close();
 		try {
-			await __test__renameWithRetryAsync(tempPath, filePath);
+			await renameWithRetryAsync(tempPath, filePath);
 		} catch (renameError) {
 			let matches = false;
 			try {

@@ -54,8 +54,11 @@ export function cleanupRunWorktrees(manifest: TeamRunManifest, options: { force?
 			result.preserved.push({ path: worktreePath, reason: "dirty worktree preserved" });
 			continue;
 		}
+		const args = ["worktree", "remove"];
+		if (options.force) args.push("--force");
+		args.push(worktreePath);
 		try {
-			git(manifest.cwd, ["worktree", "remove", options.force ? "--force" : "", worktreePath].filter(Boolean));
+			git(manifest.cwd, args);
 			result.removed.push(worktreePath);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);

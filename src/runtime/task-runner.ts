@@ -291,6 +291,7 @@ export async function runTeamTask(input: TaskRunnerInput): Promise<{ manifest: T
 		tasks = updateTask(tasks, task);
 		({ task, tasks } = checkpointTask(manifest, tasks, task, "artifact-written"));
 	} else if (runtimeKind === "live-session") {
+		// LAZY: live-executor is only needed for live-session runtime branches.
 		const { runLiveTask } = await import("./task-runner/live-executor.ts");
 		const live = await runLiveTask({ manifest, tasks, task, step: input.step, agent: input.agent, prompt, signal: input.signal, runtimeConfig: input.runtimeConfig, parentContext: input.parentContext, parentModel: input.parentModel, modelRegistry: input.modelRegistry, modelOverride: input.modelOverride, teamRoleModel: input.teamRoleModel });
 		task = live.task;

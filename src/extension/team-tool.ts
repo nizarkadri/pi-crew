@@ -32,6 +32,7 @@ import type { executeTeamRun as ExecuteTeamRunFn } from "../runtime/team-runner.
 let _cachedExecuteTeamRun: typeof ExecuteTeamRunFn | undefined;
 async function executeTeamRun(...args: Parameters<typeof ExecuteTeamRunFn>): Promise<Awaited<ReturnType<typeof ExecuteTeamRunFn>>> {
 	if (!_cachedExecuteTeamRun) {
+		// LAZY: heavy runtime — defer 1.4s import cost until team run actually executes.
 		const mod = await import("../runtime/team-runner.ts");
 		_cachedExecuteTeamRun = mod.executeTeamRun;
 	}
@@ -201,7 +202,7 @@ export async function handleResume(params: TeamToolParamsValue, ctx: TeamContext
 		const loadedConfig = loadConfig(ctx.cwd);
 		const recovered = recoverCheckpointedTasks(loaded.manifest, loaded.tasks);
 		const resumeManifest = recovered.manifest;
-		const executedConfig = effectiveRunConfig(loadedConfig.config, params.config);
+		const executedConfig = { ...effectiveRunConfig(loadedConfig.config, params.config) };
 		// Preserve original manifest scaffold mode when resume has no explicit mode override
 		// AND workers are not explicitly disabled. If workers are disabled, let
 		// resolveCrewRuntime detect it and return blocked safety.

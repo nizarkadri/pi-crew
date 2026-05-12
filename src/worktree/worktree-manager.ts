@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { loadConfig } from "../config/config.ts";
 import { projectCrewRoot } from "../utils/paths.ts";
 import { DEFAULT_PATHS } from "../config/defaults.ts";
+import { logInternalError } from "../utils/internal-error.ts";
 import type { TeamRunManifest, TeamTaskState } from "../state/types.ts";
 
 export interface PreparedTaskWorkspace {
@@ -44,7 +45,10 @@ export function assertCleanLeader(repoRoot: string): void {
 function linkNodeModulesIfPresent(repoRoot: string, worktreePath: string): boolean {
 	const source = path.join(repoRoot, "node_modules");
 	const target = path.join(worktreePath, "node_modules");
-	if (!fs.existsSync(source) || fs.existsSync(target)) return false;
+	let sourceStat: fs.Stats;
+	try { sourceStat = fs.statSync(source); } catch { return false; }
+	if (!sourceStat.isDirectory()) return false;
+	if (fs.existsSync(target)) return false;
 	try {
 		fs.symlinkSync(source, target, process.platform === "win32" ? "junction" : "dir");
 		return true;
@@ -84,10 +88,24 @@ function runSetupHook(manifest: TeamRunManifest, task: TeamTaskState, repoRoot: 
 		const parsed = JSON.parse(lastLine) as { syntheticPaths?: unknown };
 		if (!Array.isArray(parsed.syntheticPaths)) return [];
 		return [...new Set(parsed.syntheticPaths.filter((entry): entry is string => typeof entry === "string").map((entry) => normalizeSyntheticPath(worktreePath, entry)))];
-	} catch {
-		// Hook output was not valid JSON — treat as no synthetic paths
+	} catch (error) {
+		logInternalError("worktree.setupHook.parse", error, `lastLine=${(trimmed.split(/\r?\n/).pop() ?? "").slice(0, 200)}`);
 		return [];
 	}
+}
+
+function branchExists(repoRoot: string, branch: string): boolean {
+	try {
+		git(repoRoot, ["rev-parse", "--verify", `refs/heads/${branch}`]);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function pruneStaleWorktrees(repoRoot: string): void {
+	try { execFileSync("git", ["worktree", "prune"], { cwd: repoRoot, stdio: "ignore" }); }
+	catch { /* best-effort */ }
 }
 
 export function prepareTaskWorkspace(manifest: TeamRunManifest, task: TeamTaskState): PreparedTaskWorkspace {
@@ -111,7 +129,12 @@ export function prepareTaskWorkspace(manifest: TeamRunManifest, task: TeamTaskSt
 		}
 		return { cwd: worktreePath, worktreePath, branch, reused: true };
 	}
-	git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+	pruneStaleWorktrees(repoRoot);
+	if (branchExists(repoRoot, branch)) {
+		git(repoRoot, ["worktree", "add", worktreePath, branch]);
+	} else {
+		git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+	}
 	const syntheticPaths = runSetupHook(manifest, task, repoRoot, worktreePath, branch);
 	const nodeModulesLinked = loadedConfig.config.worktree?.linkNodeModules === true ? linkNodeModulesIfPresent(repoRoot, worktreePath) : false;
 	return { cwd: worktreePath, worktreePath, branch, reused: false, nodeModulesLinked, syntheticPaths };

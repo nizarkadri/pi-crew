@@ -14,6 +14,7 @@ import type { handleTeamTool as HandleTeamToolFn } from "../team-tool.ts";
 let _cachedHandleTeamTool: typeof HandleTeamToolFn | undefined;
 async function handleTeamTool(params: Parameters<typeof HandleTeamToolFn>[0], ctx: Parameters<typeof HandleTeamToolFn>[1]): Promise<ReturnType<typeof HandleTeamToolFn>> {
 	if (!_cachedHandleTeamTool) {
+		// LAZY: team-tool.ts imports many modules — defer until first use.
 		const mod = await import("../team-tool.ts");
 		_cachedHandleTeamTool = mod.handleTeamTool;
 	}

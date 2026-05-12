@@ -10,6 +10,7 @@ import type { executeTeamRun as ExecuteTeamRunFn } from "./team-runner.ts";
 let _cachedExecuteTeamRun: typeof ExecuteTeamRunFn | undefined;
 async function executeTeamRun(...args: Parameters<typeof ExecuteTeamRunFn>): Promise<Awaited<ReturnType<typeof ExecuteTeamRunFn>>> {
 	if (!_cachedExecuteTeamRun) {
+		// LAZY: avoid pulling team-runner into background-runner at module load time.
 		const mod = await import("./team-runner.ts");
 		_cachedExecuteTeamRun = mod.executeTeamRun;
 	}

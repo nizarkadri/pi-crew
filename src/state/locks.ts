@@ -40,16 +40,6 @@ function isLockStale(filePath: string, staleMs: number): boolean {
 	}
 }
 
-function readLockState(filePath: string, staleMs: number): boolean {
-	if (!isLockStale(filePath, staleMs)) return false;
-	try {
-		fs.rmSync(filePath, { force: true });
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 function writeLockFile(filePath: string): void {
 	const fd = fs.openSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o644);
 	try {
@@ -69,14 +59,18 @@ function acquireLockWithRetry(filePath: string, staleMs: number): void {
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code !== "EEXIST") throw error;
-			if (!readLockState(filePath, staleMs)) {
-				throw new Error(`Run '${path.basename(filePath)}' is locked by another operation.`);
-			}
 			if (Date.now() > deadline) {
 				throw new Error(`Run '${path.basename(filePath)}' is locked by another operation.`);
 			}
-			const delay = Math.min(250, 25 * 2 ** attempt);
-			sleepSync(delay);
+			// If lock is not stale, fail fast (sync should not wait for active locks)
+			if (!isLockStale(filePath, staleMs)) {
+				throw new Error(`Run '${path.basename(filePath)}' is locked by another operation.`);
+			}
+			// Lock is stale — try to clear it, but don't bail on rmSync error — let loop retry
+			try {
+				fs.rmSync(filePath, { force: true });
+			} catch { /* race — let loop retry */ }
+			sleepSync(Math.min(250, 25 * 2 ** attempt));
 			attempt++;
 		}
 	}

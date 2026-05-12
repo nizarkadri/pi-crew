@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Value } from "typebox/value";
 import { TeamToolParams } from "../../src/schema/team-tool-schema.ts";
 
 function walkSchema(node: unknown, visit: (node: Record<string, unknown>) => void): void {
@@ -34,4 +35,9 @@ test("team tool flexible fields use explicit schema shapes", () => {
 	assert.equal(skill.anyOf?.length, 3);
 	assert.equal(config.type, "object");
 	assert.equal(config.additionalProperties, true);
+});
+
+test("schema accepts action: retry", () => {
+	const ok = Value.Check(TeamToolParams, { action: "retry", runId: "r1" });
+	assert.strictEqual(ok, true);
 });
