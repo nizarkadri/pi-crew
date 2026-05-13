@@ -151,6 +151,7 @@ export function parseGitHubUrl(raw: string, scheme: "issue" | "pr"): Parsed {
 			return { kind: "single", repo: undefined, number: parsePositiveInt(host)!, comments };
 		}
 		if (pathParts[0] === "diff") {
+			if (scheme !== "pr") throw new Error(`Invalid ${scheme}:// URL. Diff is only available for pr:// URLs.`);
 			const number = parsePositiveInt(host)!;
 			const diffParts = pathParts;
 			if (diffParts.length === 1) {
@@ -401,6 +402,34 @@ export function resolveGitHubUrl(parsed: Parsed, scheme: "issue" | "pr", cwd: st
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 				throw new Error(`pr://${parsed.number}/diff failed: ${msg}`);
+			}
+		}
+
+		if (parsed.mode === "slice" && parsed.index !== undefined) {
+			try {
+				const raw = execFileSync(
+					"gh", ["pr", "view", String(parsed.number), "--repo", repo, "--json", "files", "--jq", ".files[] | \"\(.filename) +\(.additions) -\(.deletions) [\(.status)]\""],
+					{ cwd, encoding: "utf-8", timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
+				);
+				const fileLines = raw.split("\n").filter(Boolean);
+				const targetIdx = parsed.index - 1;
+				if (targetIdx < 0 || targetIdx >= fileLines.length) {
+					throw new Error(`File index ${parsed.index} out of range (1..${fileLines.length}).`);
+				}
+				const fullDiff = execFileSync("gh", ["pr", "diff", String(parsed.number), "--repo", repo], {
+					cwd, encoding: "utf-8", timeout: 30_000, stdio: ["pipe", "pipe", "pipe"],
+				});
+				// Extract the diff for the target file by splitting on "diff --git" headers
+				const diffBlocks = fullDiff.split(/(?=diff --git )/);
+				const fileName = fileLines[targetIdx]!.split(" ")[0];
+				const matched = diffBlocks.find((block) => block.includes(fileName!));
+				return {
+					content: matched || `File ${fileName} not found in diff.`,
+					notes: [`Diff for file ${parsed.index}/${fileLines.length}: ${fileName} in pr://${repo}/${parsed.number}`],
+				};
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				throw new Error(`pr://${parsed.number}/diff/${parsed.index} failed: ${msg}`);
 			}
 		}
 	}

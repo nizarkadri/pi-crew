@@ -61,11 +61,13 @@ export class LiveConversationOverlay {
 		try { this.refreshSummary(); } catch { /* ignore */ }
 	}
 
+	private static readonly SUMMARY_PREFIX = "\u200B"; // zero-width space as summary sentinel
+
 	private refreshSummary(): void {
 		const act = this.handle.activity;
-		const summary = `[${act.turnCount} turns · ${act.toolUses} tools · ${((act.completedAtMs ?? Date.now()) - act.startedAtMs) / 1000}s]`;
+		const summary = `${LiveConversationOverlay.SUMMARY_PREFIX}[${act.turnCount} turns · ${act.toolUses} tools · ${((act.completedAtMs ?? Date.now()) - act.startedAtMs) / 1000}s]`;
 		const lastLine = this.cachedLines[this.cachedLines.length - 1];
-		if (lastLine?.startsWith("[")) {
+		if (lastLine?.startsWith(LiveConversationOverlay.SUMMARY_PREFIX)) {
 			this.cachedLines[this.cachedLines.length - 1] = summary;
 		} else {
 			this.cachedLines.push(summary);

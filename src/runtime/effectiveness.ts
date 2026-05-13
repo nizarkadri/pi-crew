@@ -39,7 +39,8 @@ export function evaluateRunEffectiveness(input: { manifest?: TeamRunManifest; ta
 	const needsAttentionTasks = input.tasks.filter((task) => task.agentProgress?.activityState === "needs_attention");
 	const workerExecution: WorkerExecutionState = input.executeWorkers ? "enabled" : "disabled/scaffold";
 	const guardMode = resolveEffectivenessGuardMode(input.runtimeConfig, input.manifest);
-	const observable = Math.max(0, completedTasks.length - noObservedWorkTasks.length - needsAttentionTasks.length);
+	const completedNeedsAttention = needsAttentionTasks.filter((task) => task.status === "completed").length;
+	const observable = Math.max(0, completedTasks.length - noObservedWorkTasks.length - completedNeedsAttention);
 	let severity: RunEffectivenessSeverity = "ok";
 	if (input.executeWorkers && guardMode !== "off" && noObservedWorkTasks.length > 0) {
 		severity = guardMode === "fail" ? "failed" : guardMode === "block" ? "blocked" : "warning";

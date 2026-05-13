@@ -61,10 +61,15 @@ export async function waitForRun(
 	// Medium path: foreground promise registered in this process
 	const entry = activeRunPromises.get(runId);
 	if (entry) {
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		const timeoutPromise = new Promise<never>((_, reject) => {
-			setTimeout(() => reject(new Error(`waitForRun timed out after ${timeoutMs}ms`)), timeoutMs);
+			timer = setTimeout(() => reject(new Error(`waitForRun timed out after ${timeoutMs}ms`)), timeoutMs);
 		});
-		return Promise.race([entry.promise, timeoutPromise]);
+		try {
+			return await Promise.race([entry.promise, timeoutPromise]);
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
 	}
 
 	// Slow path: background run — poll with exponential backoff capped at pollIntervalMs
