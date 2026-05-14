@@ -51,7 +51,7 @@ function isRetryableRenameError(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && "code" in error && RETRYABLE_RENAME_CODES.has(String((error as NodeJS.ErrnoException).code)));
 }
 
-export function renameWithRetry(tempPath: string, filePath: string, retries = 20, rename: (oldPath: string, newPath: string) => void = fs.renameSync): void {
+export function renameWithRetry(tempPath: string, filePath: string, retries = 8, rename: (oldPath: string, newPath: string) => void = fs.renameSync): void {
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
@@ -60,9 +60,12 @@ export function renameWithRetry(tempPath: string, filePath: string, retries = 20
 		} catch (error) {
 			lastError = error;
 			if (!isRetryableRenameError(error) || attempt === retries) break;
-			// Exponential backoff: 10ms, 20ms, 40ms, ..., capped at 500ms
-			// Windows EPERM on rename can take longer when multiple processes contend
-			sleepSync(Math.min(500, 10 * 2 ** attempt));
+			// 3.4: exponential backoff with ±20% jitter, capped at 500ms.
+			// Without jitter, multiple processes contending on the same file
+			// retry in lockstep and starve each other.
+			const base = Math.min(500, 10 * 2 ** attempt);
+			const jitter = base * 0.2 * (Math.random() * 2 - 1);
+			sleepSync(Math.max(1, Math.round(base + jitter)));
 		}
 	}
 	throw lastError;
@@ -71,7 +74,7 @@ export function renameWithRetry(tempPath: string, filePath: string, retries = 20
 /** Test alias for renameWithRetry. */
 export const __test__renameWithRetry = renameWithRetry;
 
-export async function renameWithRetryAsync(tempPath: string, filePath: string, retries = 10, rename: (oldPath: string, newPath: string) => Promise<void> = (source, destination) => fs.promises.rename(source, destination)): Promise<void> {
+export async function renameWithRetryAsync(tempPath: string, filePath: string, retries = 8, rename: (oldPath: string, newPath: string) => Promise<void> = (source, destination) => fs.promises.rename(source, destination)): Promise<void> {
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		try {
@@ -80,7 +83,10 @@ export async function renameWithRetryAsync(tempPath: string, filePath: string, r
 		} catch (error) {
 			lastError = error;
 			if (!isRetryableRenameError(error) || attempt === retries) break;
-			await sleep(Math.min(500, 10 * 2 ** attempt));
+			// 3.4: same jitter as renameWithRetry.
+			const base = Math.min(500, 10 * 2 ** attempt);
+			const jitter = base * 0.2 * (Math.random() * 2 - 1);
+			await sleep(Math.max(1, Math.round(base + jitter)));
 		}
 	}
 	throw lastError;
