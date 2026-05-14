@@ -44,7 +44,21 @@ function killProcessTree(pid: number | undefined, child?: ChildProcess): void {
 	if (child && child.exitCode !== null) return;
 	try {
 		if (process.platform === "win32") {
+			// 3.8: Windows path uses taskkill /T /F (force kill the entire tree).
+			// taskkill itself can silently fail (PID gone, permission denied, etc.)
+			// so verify after 2s and log a warning if the process is still alive.
 			spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+			const verifyTimer = setTimeout(() => {
+				try {
+					process.kill(pid, 0); // throws ESRCH when dead
+					// Still alive — log and retry once.
+					logInternalError("child-pi.taskkill-stuck", new Error(`process ${pid} still alive 2s after taskkill /T /F; retrying`), `pid=${pid}`);
+					try { spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }); } catch { /* best-effort */ }
+				} catch {
+					// ESRCH or EPERM — process is gone. OK.
+				}
+			}, 2000);
+			verifyTimer.unref();
 			return;
 		}
 		try {
