@@ -177,7 +177,7 @@ function agentStats(agent: CrewAgentRecord, liveHandle?: LiveAgentHandle): strin
 		if (agent.progress?.tokens) parts.push(formatTokensCompact(agent.progress.tokens));
 		if (agent.progress?.turns) parts.push(`\u27F3${agent.progress.turns}`);
 		const age = elapsed(agent.completedAt ?? agent.startedAt);
-		if (age) parts.push(agent.completedAt ? age : `${age} (running)`);
+		if (age) parts.push((agent.status === "running" || agent.status === "queued" || agent.status === "waiting") ? `${age} (running)` : age);
 	}
 	return parts.join(" · ");
 }
@@ -251,10 +251,15 @@ export function buildCrewWidgetLines(cwd: string, frame = 0, maxLines = 8, provi
 	const lines: string[] = [widgetHeader(runs, runningGlyph, maxLines, notificationCount)];
 	for (const { run, agents, snapshot } of runs) {
 		const activeAgents = agents.filter((item) => item.status === "running" || item.status === "queued" || item.status === "waiting");
-		// R1: Include recently finished agents (linger 1-2 turns)
-		const finishedAgents = agents.filter((item) =>
-			item.status !== "running" && item.status !== "queued" && item.status !== "waiting" && item.completedAt,
-		);
+		// R1: Include recently finished agents (linger 1-2 min)
+		const now = Date.now();
+		const finishedAgents = agents.filter((item) => {
+			if (item.status === "running" || item.status === "queued" || item.status === "waiting") return false;
+			if (!item.completedAt) return false;
+			const maxAgeMs = (ERROR_STATUSES.has(item.status) ? ERROR_LINGER_MAX_AGE : FINISHED_LINGER_MAX_AGE) * 60_000;
+			const age = now - new Date(item.completedAt).getTime();
+			return Number.isFinite(age) && age < maxAgeMs;
+		});
 		const completed = agents.filter((agent) => agent.status === "completed").length;
 		const runGlyph = iconForStatus(run.status, { runningGlyph });
 		const phaseLine = snapshot ? formatPhaseProgressLine(computePhaseProgress(snapshot.tasks)) : "";
@@ -370,7 +375,7 @@ class CrewWidgetComponent implements WidgetComponent {
 
 	render(width: number): string[] {
 		const runs = activeWidgetRuns(this.model.cwd, this.model.manifestCache, this.model.snapshotCache, this.model.preloadManifests);
-		const signature = `${this.buildSignature(runs)}:${this.model.notificationCount ?? 0}`;
+		const signature = `${this.buildSignature(runs)}:${this.model.notificationCount ?? 0}:${this.model.frame}`;
 		const runningGlyph = SPINNER[this.model.frame % SPINNER.length] ?? SPINNER[0];
 		const headerGlyph = runs.length ? SPINNER[0] : " ";
 
@@ -385,7 +390,10 @@ class CrewWidgetComponent implements WidgetComponent {
 			this.cacheSignature = signature;
 		}
 
-		if (runs.length === 0) return [];
+		if (runs.length === 0) {
+			this.invalidate();
+			return [];
+		}
 
 		// Update only spinner and command icon on header line to avoid full re-color for every frame.
 		const updatedHeader = `${runningGlyph}${this.cachedBaseLines[0]?.slice(1) ?? ""}`;
