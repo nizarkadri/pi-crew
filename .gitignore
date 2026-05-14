@@ -12,3 +12,4 @@ PI_MEMORY.md
 .profile/
 test/bench/results.json
 *.cpuprofile
+dist/
