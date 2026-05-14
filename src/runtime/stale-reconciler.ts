@@ -33,6 +33,11 @@ function checkResultFile(
 		(t) => t.status === "completed" || t.status === "failed" || t.status === "cancelled" || t.status === "skipped",
 	);
 	if (allTerminal) {
+		// Sync agent records even when tasks are already terminal
+		// (e.g., a previous reconcile fixed tasks but crashed before updating agents)
+		for (const task of tasks) {
+			try { upsertCrewAgent(manifest, recordFromTask(manifest, task, "scaffold")); } catch { /* non-critical */ }
+		}
 		return { found: true, repaired: false };
 	}
 	return { found: false, repaired: false };
