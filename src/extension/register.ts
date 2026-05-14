@@ -16,6 +16,8 @@ import { loadRunManifestById, updateRunStatus } from "../state/state-store.ts";
 import { appendEvent } from "../state/event-log.ts";
 import type { TeamRunManifest } from "../state/types.ts";
 import { terminateActiveChildPiProcesses } from "../subagents/spawn.ts";
+import { killProcessPid } from "../runtime/child-pi.ts";
+import { checkProcessLiveness } from "../runtime/process-status.ts";
 import { SubagentManager } from "../subagents/manager.ts";
 import { __test__subagentSpawnParams, sendAgentWakeUp, sendFollowUp } from "./registration/subagent-helpers.ts";
 import { DEFAULT_NOTIFICATIONS, DEFAULT_UI } from "../config/defaults.ts";
@@ -30,6 +32,7 @@ import { registerCompactionGuard } from "./registration/compaction-guard.ts";
 import { requestRender, setExtensionWidget, setWorkingIndicator, showCustom } from "../ui/pi-ui-compat.ts";
 import { createRunSnapshotCache } from "../ui/run-snapshot-cache.ts";
 import { RenderScheduler } from "../ui/render-scheduler.ts";
+import { runEventBus } from "../ui/run-event-bus.ts";
 import { CrewScheduler } from "../runtime/scheduler.ts";
 import { NotificationRouter, type NotificationDescriptor } from "./notification-router.ts";
 import { createJsonlSink, type NotificationSink } from "./notification-sink.ts";
@@ -41,7 +44,7 @@ import { createMetricFileSink, type MetricSink } from "../observability/metric-s
 import { OTLPExporter } from "../observability/exporters/otlp-exporter.ts";
 import { HeartbeatWatcher } from "../runtime/heartbeat-watcher.ts";
 import { appendDeadletter } from "../runtime/deadletter.ts";
-import { cancelOrphanedRuns, detectInterruptedRuns, purgeStaleActiveRunIndex } from "../runtime/crash-recovery.ts";
+import { cancelOrphanedRuns, detectInterruptedRuns, purgeStaleActiveRunIndex, reconcileAllStaleRuns } from "../runtime/crash-recovery.ts";
 import { pruneFinishedRuns, pruneUserLevelRuns } from "../extension/run-maintenance.ts";
 import { DeliveryCoordinator } from "../runtime/delivery-coordinator.ts";
 import { OverflowRecoveryTracker } from "../runtime/overflow-recovery.ts";
@@ -244,13 +247,20 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 	const foregroundControllers = new Map<string | symbol, AbortController>();
 	let liveSidebarRunId: string | undefined;
 	let renderScheduler: RenderScheduler | undefined;
+	const renderSchedulerUnsubscribers: Array<() => void> = [];
 	let crewScheduler: CrewScheduler | undefined;
 	let preloadTimer: ReturnType<typeof setTimeout> | undefined;
+	const disposeRenderSchedulerSubscriptions = (): void => {
+		for (const unsub of renderSchedulerUnsubscribers.splice(0)) {
+			try { unsub(); } catch (error) { logInternalError("register.renderScheduler.unsubscribe", error); }
+		}
+	};
 	const stopSessionBoundSubagents = (): void => {
 		for (const controller of foregroundControllers.values()) controller.abort();
 		foregroundControllers.clear();
 		subagentManager.abortAll();
 		terminateActiveChildPiProcesses();
+		disposeRenderSchedulerSubscriptions();
 		renderScheduler?.dispose();
 		renderScheduler = undefined;
 		liveSidebarRunId = undefined;
@@ -364,6 +374,18 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		crewScheduler?.stop();
 		stopAsyncRunNotifier(notifierState);
 
+		// Best-effort: kill any async background runners that are still alive.
+		// Foreground child processes are already handled by stopSessionBoundSubagents().
+		try {
+			for (const manifest of manifestCache.list(50)) {
+				if (manifest.async?.pid !== undefined && checkProcessLiveness(manifest.async.pid).alive) {
+					killProcessPid(manifest.async.pid);
+				}
+			}
+		} catch (error) {
+			logInternalError("register.cleanupRuntime.killAsync", error);
+		}
+
 		// P0: Purge all stale active-run-index entries on session cleanup.
 		// This handles: normal exit, SIGTERM, Ctrl+C — any case where cleanupRuntime fires.
 		// For SIGKILL / crash / SIGHUP (where cleanupRuntime does NOT fire),
@@ -393,6 +415,7 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		overflowTracker = undefined;
 		manifestCache.dispose();
 		runSnapshotCache.dispose?.();
+		disposeRenderSchedulerSubscriptions();
 		renderScheduler?.dispose();
 		renderScheduler = undefined;
 		autoRecoveryLast.clear();
@@ -449,6 +472,17 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 				}
 			} catch (error) {
 				logInternalError("register.sessionStart.globalIndexPurge", error);
+			}
+
+			// Reconcile stale runs found on disk (not in active-run-index)
+			// These are ghost runs from crashed processes that were never cleaned up.
+			try {
+				const staleResults = reconcileAllStaleRuns(ctx.cwd, getManifestCache(ctx.cwd));
+				if (staleResults.length > 0) {
+					notifyOperator({ id: "stale_reconcile", severity: "info", source: "crash-recovery", title: "Reconciled " + staleResults.length + " stale run(s)", body: "Found and repaired ghost runs from previous sessions: " + staleResults.map((r) => r.runId).join(", ") });
+				}
+			} catch (error) {
+				logInternalError("register.sessionStart.reconcileStale", error);
 			}
 
 			// Auto-prune finished project-level run directories (keep 10 most recent)
@@ -508,6 +542,7 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		const cache = getManifestCache(ctx.cwd);
 		updateCrewWidget(ctx, widgetState, loadedConfig.config.ui, cache, getRunSnapshotCache(ctx.cwd));
 		updatePiCrewPowerbar(pi.events, ctx.cwd, loadedConfig.config.ui, cache, getRunSnapshotCache(ctx.cwd), ctx, widgetState.notificationCount ?? 0);
+		disposeRenderSchedulerSubscriptions();
 		renderScheduler?.dispose();
 		// Phase 12: Async preloading — renderTick reads only a pre-computed frame
 		// from memory (zero fs I/O). Background preload refreshes the frame async.
@@ -604,11 +639,20 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		};
 
 		const fallbackMs = loadedConfig.config.ui?.dashboardLiveRefreshMs ?? DEFAULT_UI.refreshMs;
-		// R3: Use faster refresh when live agents are running
-		const liveRefreshMs = 120;
-		const effectiveRefreshMs = () => listLiveAgents().some((a) => a.status === "running") ? liveRefreshMs : fallbackMs;
+		// R3: Use faster refresh when live agents OR background runs are running.
+		// 160ms is aligned with SUBAGENT_SPINNER_FRAME_MS so the spinner advances
+		// one frame per render tick when a run is active. Falls back to the
+		// (slower) configured refresh when idle to save CPU.
+		const liveRefreshMs = 160;
+		const hasActiveWork = (): boolean => {
+			if (listLiveAgents().some((a) => a.status === "running")) return true;
+			return lastPreloadedManifests.some((r) => r.status === "running" || r.status === "queued" || r.status === "planning");
+		};
+		const effectiveRefreshMs = () => hasActiveWork() ? liveRefreshMs : fallbackMs;
 		renderScheduler = new RenderScheduler(pi.events, renderTick, {
-			fallbackMs,
+			// Dynamic fallback: same logic as preload loop so the render timer
+			// also ticks at spinner frequency while a run is active.
+			fallbackMs: effectiveRefreshMs,
 			onInvalidate: (payload: unknown) => {
 				// Invalidate only the specific run, not the entire cache.
 				// Full cache.clear() causes widget flicker — the widget component's
@@ -620,6 +664,15 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 				getRunSnapshotCache(ctx.cwd).invalidate(runId);
 			},
 		});
+		// Fix D: bridge internal runEventBus events (task_started/completed/etc)
+		// to renderScheduler so the UI re-renders within debounceMs of any agent
+		// lifecycle event — not just every fallback tick. Without this, short-lived
+		// workers can appear and disappear before the user sees them.
+		const sched = renderScheduler;
+		const unsubscribeRunEvents = runEventBus.onAny((event) => {
+			sched.schedule({ runId: event.runId, source: "runEventBus", type: event.type });
+		});
+		renderSchedulerUnsubscribers.push(unsubscribeRunEvents);
 		// Start async preload loop — refreshes snapshot cache in background
 		startPreloadLoop(fallbackMs, effectiveRefreshMs);
 	});
