@@ -46,6 +46,7 @@ import { CrewScheduler } from "../runtime/scheduler.ts";
 import { NotificationRouter, type NotificationDescriptor } from "./notification-router.ts";
 import { createJsonlSink, type NotificationSink } from "./notification-sink.ts";
 import { clearProjectRootCache, projectCrewRoot } from "../utils/paths.ts";
+import { closeWatcher, watchCrewState } from "../utils/fs-watch.ts";
 import { summarizeHeartbeats } from "../ui/heartbeat-aggregator.ts";
 import { createMetricRegistry, type MetricRegistry } from "../observability/metric-registry.ts";
 import { wireEventToMetrics, type EventToMetricSubscription } from "../observability/event-to-metric.ts";
@@ -302,6 +303,12 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 	let renderScheduler: RenderScheduler | undefined;
 	let crewScheduler: CrewScheduler | undefined;
 	let preloadTimer: ReturnType<typeof setTimeout> | undefined;
+	// 1.3: optional native FS watcher on `<crewRoot>/state` — when running on
+	// a filesystem that supports recursive fs.watch (Windows NTFS, macOS, modern
+	// Linux), file changes (manifest/tasks/events/agents) trigger an
+	// immediate cache invalidate via renderScheduler.schedule. Falls back to
+	// poll-only behavior on systems where fs.watch errors.
+	let crewWatcher: import("node:fs").FSWatcher | undefined;
 	const stopSessionBoundSubagents = (): void => {
 		for (const controller of foregroundControllers.values()) controller.abort();
 		foregroundControllers.clear();
@@ -419,6 +426,7 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		if (cleanedUp) return;
 		cleanedUp = true;
 		if (preloadTimer) { clearTimeout(preloadTimer); preloadTimer = undefined; }
+		closeWatcher(crewWatcher); crewWatcher = undefined;
 		stopSessionBoundSubagents();
 		crewScheduler?.stop();
 		stopAsyncRunNotifier(notifierState);
@@ -698,6 +706,27 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		});
 		// Start async preload loop — refreshes snapshot cache in background
 		startPreloadLoop(fallbackMs, effectiveRefreshMs);
+		// 1.3: native FS watcher on `<crewRoot>/state`. Triggers an immediate
+		// renderScheduler.schedule({runId}) when files inside any run change so
+		// the snapshot cache invalidates well before the 1s preload tick. Falls
+		// back silently to poll-only behavior on systems where recursive
+		// fs.watch is not supported.
+		try {
+			closeWatcher(crewWatcher);
+			crewWatcher = undefined;
+			const stateDir = path.join(projectCrewRoot(ctx.cwd), "state");
+			const watcher = watchCrewState(stateDir, (runId) => {
+				if (cleanedUp || sessionGeneration !== ownerGeneration) return;
+				renderScheduler?.schedule({ runId });
+			}, (error) => {
+				logInternalError("register.crewWatcher.error", error);
+				closeWatcher(crewWatcher);
+				crewWatcher = undefined;
+			});
+			if (watcher) crewWatcher = watcher;
+		} catch (error) {
+			logInternalError("register.crewWatcher.start", error);
+		}
 	});
 	pi.on("session_before_switch", () => {
 		sessionGeneration++;
