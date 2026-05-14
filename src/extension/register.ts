@@ -561,7 +561,13 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 			const config = lastPreloadedConfig?.config.ui;
 			const activeCache = lastFrameManifestCache ?? getManifestCache(currentCtx.cwd);
 			const snapshotCache = lastFrameSnapshotCache ?? getRunSnapshotCache(currentCtx.cwd);
-			const manifests = lastPreloadedManifests.length > 0 ? lastPreloadedManifests : activeCache.list(20);
+			// 1.1: keep render path zero-fs-IO. Always read from the preloaded
+			// frame; if it is empty (first tick after session_start, or cwd
+			// switched), kick off a background preload and render a skeleton
+			// (empty manifests). The preload will reschedule a render when the
+			// frame is ready, avoiding statSync(`runs/`) inside the hot path.
+			const manifests = lastPreloadedManifests;
+			if (!lastPreloadedConfig) backgroundPreload();
 			if (liveSidebarRunId) {
 				const placement = config?.widgetPlacement ?? DEFAULT_UI.widgetPlacement;
 				if (widgetState.lastVisibility !== "hidden" || widgetState.lastPlacement !== placement) {
