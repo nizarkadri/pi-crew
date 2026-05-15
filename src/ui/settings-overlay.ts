@@ -1,9 +1,10 @@
 /**
  * Interactive TUI Settings Overlay for pi-crew.
- * Renders a tabbed settings list with inline editing, similar to Pi's /settings.
+ * Mirrors Pi's built-in /settings selector: tab bar, settings list with
+ * label/value alignment, inline toggle, select submenu, and text input.
  */
 import type { CrewTheme } from "./theme-adapter.ts";
-import { truncate } from "../utils/visual.ts";
+import { DynamicCrewBorder } from "./dynamic-border.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -89,10 +90,6 @@ const SETTINGS: SettingDef[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Effective defaults — values used when config key is not set
 // ---------------------------------------------------------------------------
 
@@ -131,10 +128,50 @@ const EFFECTIVE_DEFAULTS: Record<string, unknown> = {
 	"notifications.enabled": false,
 };
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Visible character width (ignores ANSI escapes). */
+function visibleWidth(text: string): number {
+	// eslint-disable-next-line no-control-regex
+	let w = 0;
+	let inEscape = false;
+	for (const ch of text) {
+		if (ch === "\x1b") { inEscape = true; continue; }
+		if (inEscape) { if (/[a-zA-Z]/.test(ch)) inEscape = false; continue; }
+		w++;
+	}
+	return w;
+}
+
+/** Truncate string to fit within maxVis visible characters. */
+function truncateToWidth(text: string, maxVis: number): string {
+	// eslint-disable-next-line no-control-regex
+	let w = 0;
+	let result = "";
+	let inEscape = false;
+	for (const ch of text) {
+		if (ch === "\x1b") { inEscape = true; result += ch; continue; }
+		if (inEscape) { result += ch; if (/[a-zA-Z]/.test(ch)) inEscape = false; continue; }
+		w++;
+		if (w > maxVis) return result + "…";
+		result += ch;
+	}
+	return result;
+}
+
+/** Pad string to exactly maxVis visible width. */
+function padToWidth(text: string, maxVis: number, padChar = " "): string {
+	const vw = visibleWidth(text);
+	if (vw >= maxVis) return truncateToWidth(text, maxVis);
+	return text + padChar.repeat(maxVis - vw);
+}
+
 function formatValue(value: unknown, id: string): string {
 	if (value === undefined || value === null) {
 		const def = EFFECTIVE_DEFAULTS[id];
-		if (def !== undefined) return `${String(def)} (default)`;
+		if (def !== undefined) return `${String(def)}`;
 		return "<not set>";
 	}
 	if (typeof value === "boolean") return value ? "true" : "false";
@@ -153,20 +190,12 @@ function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
 	return current;
 }
 
-function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): void {
-	const keys = path.split(".");
-	let target: Record<string, unknown> = obj;
-	for (let i = 0; i < keys.length - 1; i++) {
-		if (!target[keys[i]] || typeof target[keys[i]] !== "object") {
-			target[keys[i]] = {};
-		}
-		target = target[keys[i]] as Record<string, unknown>;
-	}
-	target[keys[keys.length - 1]] = value;
+function isExplicitlySet(config: Record<string, unknown>, id: string): boolean {
+	return getNestedValue(config, id) !== undefined;
 }
 
 // ---------------------------------------------------------------------------
-// Submenu: Select from list
+// Submenu: Select from list (enum picker)
 // ---------------------------------------------------------------------------
 
 class SelectSubmenu {
@@ -176,22 +205,26 @@ class SelectSubmenu {
 	private readonly onSelect: (value: string) => void;
 	private readonly onCancel: () => void;
 	private readonly title: string;
+	private readonly description: string;
 
-	constructor(title: string, options: string[], current: string, theme: CrewTheme, onSelect: (value: string) => void, onCancel: () => void) {
+	constructor(title: string, description: string, options: string[], current: string, theme: CrewTheme, onSelect: (value: string) => void, onCancel: () => void) {
 		this.title = title;
+		this.description = description;
 		this.items = options;
 		this.theme = theme;
 		this.onSelect = onSelect;
 		this.onCancel = onCancel;
-		this.selectedIndex = options.indexOf(current);
-		if (this.selectedIndex < 0) this.selectedIndex = 0;
+		this.selectedIndex = Math.max(0, options.indexOf(current));
 	}
 
 	invalidate(): void {}
 
 	render(width: number): string[] {
 		const lines: string[] = [];
-		lines.push(this.theme.bold(this.theme.fg("accent", `  ${this.title}`)));
+		lines.push(this.theme.bold(this.theme.fg("accent", this.title)));
+		if (this.description) {
+			lines.push(this.theme.fg("muted", this.description));
+		}
 		lines.push("");
 		for (const [i, item] of this.items.entries()) {
 			const isSelected = i === this.selectedIndex;
@@ -200,45 +233,46 @@ class SelectSubmenu {
 			lines.push(isSelected ? (this.theme.inverse?.(line) ?? line) : line);
 		}
 		lines.push("");
-		lines.push(this.theme.fg("dim", "  Enter to select · Esc to go back"));
+		lines.push(this.theme.fg("dim", "Enter to select · Esc to go back"));
 		return lines;
 	}
 
 	handleInput(data: string): void {
-		if (data === "\x1b" || data === "q") {
-			this.onCancel();
-			return;
-		}
 		if (data === "\x1b[A" || data === "k") {
-			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+			this.selectedIndex = (this.selectedIndex - 1 + this.items.length) % this.items.length;
 			return;
 		}
 		if (data === "\x1b[B" || data === "j") {
-			this.selectedIndex = Math.min(this.items.length - 1, this.selectedIndex + 1);
+			this.selectedIndex = (this.selectedIndex + 1) % this.items.length;
 			return;
 		}
 		if (data === "\r" || data === "\n") {
 			this.onSelect(this.items[this.selectedIndex]!);
+			return;
+		}
+		if (data === "\x1b" || data === "q") {
+			this.onCancel();
+			return;
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Submenu: Text input
+// Submenu: Text input (number / string)
 // ---------------------------------------------------------------------------
 
 class TextinputSubmenu {
-	private value: string;
+	private buffer = "";
+	private readonly title: string;
+	private readonly description: string;
 	private readonly theme: CrewTheme;
 	private readonly onSubmit: (value: string) => void;
 	private readonly onCancel: () => void;
-	private readonly title: string;
-	private readonly description: string;
 
-	constructor(title: string, description: string, current: string, theme: CrewTheme, onSubmit: (value: string) => void, onCancel: () => void) {
+	constructor(title: string, description: string, initialValue: string, theme: CrewTheme, onSubmit: (value: string) => void, onCancel: () => void) {
 		this.title = title;
 		this.description = description;
-		this.value = current;
+		this.buffer = initialValue;
 		this.theme = theme;
 		this.onSubmit = onSubmit;
 		this.onCancel = onCancel;
@@ -248,38 +282,35 @@ class TextinputSubmenu {
 
 	render(width: number): string[] {
 		const lines: string[] = [];
-		lines.push(this.theme.bold(this.theme.fg("accent", `  ${this.title}`)));
+		lines.push(this.theme.bold(this.theme.fg("accent", this.title)));
 		if (this.description) {
-			lines.push(this.theme.fg("muted", `  ${this.description}`));
+			lines.push(this.theme.fg("muted", this.description));
 		}
 		lines.push("");
-		lines.push(`  ${this.value}▌`);
+		lines.push(`  ${this.buffer}█`);
 		lines.push("");
-		lines.push(this.theme.fg("dim", "  Enter to save · Esc to cancel · Clear to unset"));
+		lines.push(this.theme.fg("dim", "Enter to save · Esc to cancel · Clear to unset"));
 		return lines;
 	}
 
 	handleInput(data: string): void {
+		if (data === "\r" || data === "\n") {
+			this.onSubmit(this.buffer);
+			return;
+		}
 		if (data === "\x1b" || data === "q") {
 			this.onCancel();
 			return;
 		}
-		if (data === "\r" || data === "\n") {
-			this.onSubmit(this.value);
-			return;
-		}
+		// Backspace
 		if (data === "\x7f" || data === "\b") {
-			this.value = this.value.slice(0, -1);
+			this.buffer = this.buffer.slice(0, -1);
 			return;
 		}
-		// Ctrl+C
-		if (data === "\x03") {
-			this.value = "";
+		// Printable character
+		if (data.length === 1 && data >= " " && data <= "~") {
+			this.buffer += data;
 			return;
-		}
-		// Regular character (ignore escape sequences)
-		if (data.length === 1 && data.charCodeAt(0) >= 32) {
-			this.value += data;
 		}
 	}
 }
@@ -288,177 +319,124 @@ class TextinputSubmenu {
 // Submenu: Agent overrides editor
 // ---------------------------------------------------------------------------
 
-const AGENT_ROLES = ["explorer", "planner", "analyst", "critic", "executor", "reviewer", "security-reviewer", "test-engineer", "verifier", "writer"];
-
 class AgentOverridesSubmenu {
-	private readonly config: Record<string, unknown>;
+	private readonly overrides: Record<string, { model?: string; thinking?: string }>;
 	private readonly theme: CrewTheme;
-	private readonly onSave: (overrides: Record<string, unknown>) => void;
-	private readonly onCancel: () => void;
+	private readonly agents: string[];
 	private selectedIndex = 0;
-	private editingField: { role: string; field: "model" | "thinking" } | null = null;
-	private editValue = "";
+	private editField: "model" | "thinking" | null = null;
+	private editBuffer = "";
+	private readonly onApply: (overrides: Record<string, unknown>) => void;
+	private readonly onCancel: () => void;
 
-	constructor(config: Record<string, unknown>, theme: CrewTheme, onSave: (overrides: Record<string, unknown>) => void, onCancel: () => void) {
-		this.config = config;
+	constructor(config: Record<string, unknown>, theme: CrewTheme, onApply: (overrides: Record<string, unknown>) => void, onCancel: () => void) {
 		this.theme = theme;
-		this.onSave = onSave;
+		this.onApply = onApply;
 		this.onCancel = onCancel;
+		const existing = (config.agents as Record<string, unknown>)?.overrides as Record<string, { model?: string; thinking?: string }> | undefined;
+		this.overrides = existing ? structuredClone(existing) : {};
+		this.agents = ["explorer", "planner", "analyst", "critic", "executor", "reviewer", "security-reviewer", "test-engineer", "verifier", "writer"];
 	}
 
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		if (this.editingField) {
-			return this.renderEdit(width);
-		}
-		return this.renderList(width);
-	}
+		if (this.editField) return this.renderEdit(width);
 
-	private renderList(width: number): string[] {
 		const lines: string[] = [];
-		lines.push(this.theme.bold(this.theme.fg("accent", "  Agent Model Overrides")));
+		lines.push(this.theme.bold(this.theme.fg("accent", "Agent Model Overrides")));
 		lines.push("");
-		const overrides = (this.config as Record<string, unknown>).agents && typeof (this.config as Record<string, unknown>).agents === "object"
-			? ((this.config as Record<string, unknown>).agents as Record<string, unknown>).overrides as Record<string, Record<string, unknown>> | undefined
-			: undefined;
-
-		for (const [i, role] of AGENT_ROLES.entries()) {
-			const agent = overrides?.[role];
-			const model = typeof agent?.model === "string" ? agent.model : "<default>";
-			const thinking = typeof agent?.thinking === "string" ? agent.thinking : "<default>";
+		const labelWidth = 22;
+		for (const [i, agent] of this.agents.entries()) {
 			const isSelected = i === this.selectedIndex;
+			const ov = this.overrides[agent];
+			const model = ov?.model ?? "";
+			const thinking = ov?.thinking ?? "";
+			const label = padToWidth(agent, labelWidth);
+			const modelPart = model ? `model=${model}` : "";
+			const thinkingPart = thinking ? `thinking=${thinking}` : "";
+			const valueParts = [modelPart, thinkingPart].filter(Boolean).join(", ");
+			const valueText = valueParts || this.theme.fg("dim", "(default)");
 			const prefix = isSelected ? " → " : "   ";
-			const line = `${prefix}${role.padEnd(20)} ${model.padEnd(25)} thinking=${thinking}`;
-			lines.push(truncate(line, width, isSelected ? "…" : undefined));
+			const line = `${prefix}${label} ${valueText}`;
+			lines.push(isSelected ? (this.theme.inverse?.(truncateToWidth(line, width - 2)) ?? truncateToWidth(line, width - 2)) : truncateToWidth(line, width - 2));
 		}
 		lines.push("");
-		lines.push(this.theme.fg("dim", "  Enter to edit · Esc to go back"));
+		lines.push(this.theme.fg("dim", "Enter to edit model · e to edit thinking · Esc to go back"));
 		return lines;
 	}
 
 	private renderEdit(width: number): string[] {
+		const agent = this.agents[this.selectedIndex];
+		const field = this.editField === "model" ? "model" : "thinking";
 		const lines: string[] = [];
-		const field = this.editingField!;
-		lines.push(this.theme.bold(this.theme.fg("accent", `  Edit ${field.role} ${field.field}`)));
+		lines.push(this.theme.bold(this.theme.fg("accent", `Edit ${agent} ${field}`)));
 		lines.push("");
-		if (field.field === "thinking") {
-			lines.push("  Options: off, low, medium, high");
-		} else {
-			lines.push("  Example: zai/glm-5.1, minimax/minimax-m2.7");
-		}
+		lines.push(`  ${this.editBuffer}█`);
 		lines.push("");
-		lines.push(`  ${this.editValue}▌`);
-		lines.push("");
-		lines.push(this.theme.fg("dim", "  Enter to save · Esc to cancel · Clear to reset"));
+		lines.push(this.theme.fg("dim", "Enter to save · Esc to cancel · Clear to unset"));
 		return lines;
 	}
 
 	handleInput(data: string): void {
-		if (this.editingField) {
-			this.handleEditInput(data);
-			return;
-		}
+		if (this.editField) return this.handleEditInput(data);
 
-		if (data === "\x1b" || data === "q") {
-			this.onCancel();
-			return;
-		}
-		if (data === "\x1b[A" || data === "k") {
-			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-			return;
-		}
-		if (data === "\x1b[B" || data === "j") {
-			this.selectedIndex = Math.min(AGENT_ROLES.length - 1, this.selectedIndex + 1);
-			return;
-		}
+		if (data === "\x1b[A" || data === "k") { this.selectedIndex = (this.selectedIndex - 1 + this.agents.length) % this.agents.length; return; }
+		if (data === "\x1b[B" || data === "j") { this.selectedIndex = (this.selectedIndex + 1) % this.agents.length; return; }
 		if (data === "\r" || data === "\n") {
-			const role = AGENT_ROLES[this.selectedIndex]!;
-			// First Enter = edit model, we'll open model edit
-			this.editingField = { role, field: "model" };
-			const overrides = this.getOverrides();
-			const agent = overrides[role] as Record<string, unknown> | undefined;
-			this.editValue = typeof agent?.model === "string" ? agent.model : "";
+			const agent = this.agents[this.selectedIndex]!;
+			this.editField = "model";
+			this.editBuffer = this.overrides[agent]?.model ?? "";
+			return;
 		}
+		if (data === "e") {
+			const agent = this.agents[this.selectedIndex]!;
+			this.editField = "thinking";
+			this.editBuffer = this.overrides[agent]?.thinking ?? "";
+			return;
+		}
+		if (data === "\x1b") { this.onCancel(); return; }
 	}
 
 	private handleEditInput(data: string): void {
-		if (data === "\x1b") {
-			this.editingField = null;
-			return;
-		}
 		if (data === "\r" || data === "\n") {
-			const field = this.editingField!;
-			const overrides = this.getOverrides();
-			if (this.editValue === "") {
-				// Unset
-				const agent = overrides[field.role] as Record<string, unknown> | undefined;
-				if (agent) delete agent[field.field];
+			const agent = this.agents[this.selectedIndex]!;
+			if (!this.overrides[agent]) this.overrides[agent] = {};
+			if (this.editField === "model") {
+				this.overrides[agent]!.model = this.editBuffer || undefined;
 			} else {
-				if (!overrides[field.role]) overrides[field.role] = {};
-				(overrides[field.role] as Record<string, unknown>)[field.field] = this.editValue;
+				this.overrides[agent]!.thinking = this.editBuffer || undefined;
 			}
-
-			// If we just saved model, now edit thinking
-			if (field.field === "model") {
-				this.editingField = { role: field.role, field: "thinking" };
-				const agent = overrides[field.role] as Record<string, unknown> | undefined;
-				this.editValue = typeof agent?.thinking === "string" ? agent.thinking : "";
-			} else {
-				// Done editing this agent
-				this.onSave(overrides);
-				this.editingField = null;
+			// Clean up empty overrides
+			if (!this.overrides[agent]!.model && !this.overrides[agent]!.thinking) {
+				delete this.overrides[agent];
 			}
+			this.editField = null;
 			return;
 		}
-		if (data === "\x7f" || data === "\b") {
-			this.editValue = this.editValue.slice(0, -1);
-			return;
-		}
-		if (data === "\x03") {
-			this.editValue = "";
-			return;
-		}
-		if (data.length === 1 && data.charCodeAt(0) >= 32) {
-			this.editValue += data;
-		}
-	}
-
-	private getOverrides(): Record<string, unknown> {
-		const agents = (this.config as Record<string, unknown>).agents;
-		if (!agents || typeof agents !== "object") return {};
-		const overrides = (agents as Record<string, unknown>).overrides;
-		if (!overrides || typeof overrides !== "object") return {};
-		return JSON.parse(JSON.stringify(overrides)) as Record<string, unknown>;
+		if (data === "\x1b") { this.editField = null; return; }
+		if (data === "\x7f" || data === "\b") { this.editBuffer = this.editBuffer.slice(0, -1); return; }
+		if (data.length === 1 && data >= " " && data <= "~") { this.editBuffer += data; }
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Main Settings Overlay
+// Main Overlay
 // ---------------------------------------------------------------------------
 
-export class SettingsOverlay {
-	private readonly theme: CrewTheme;
-	private readonly callbacks: SettingsOverlayCallbacks;
-	private readonly config: Record<string, unknown>;
-
+class SettingsOverlay {
+	private config: Record<string, unknown>;
+	private theme: CrewTheme;
+	private callbacks: SettingsOverlayCallbacks;
 	private currentTabIndex = 0;
 	private selectedIndex = 0;
 	private scrollOffset = 0;
-	private maxVisible = 12;
-
-	// Submenu state
+	private maxVisible = 10;
 	private submenu: SelectSubmenu | TextinputSubmenu | AgentOverridesSubmenu | null = null;
 	private submenuSettingId: string | null = null;
-
-	// Changed values (for display refresh)
 	private changedValues = new Map<string, unknown>();
 
-	constructor(
-		config: Record<string, unknown>,
-		theme: CrewTheme,
-		callbacks: SettingsOverlayCallbacks,
-	) {
+	constructor(config: Record<string, unknown>, theme: CrewTheme, callbacks: SettingsOverlayCallbacks) {
 		this.config = config;
 		this.theme = theme;
 		this.callbacks = callbacks;
@@ -469,64 +447,117 @@ export class SettingsOverlay {
 	}
 
 	render(width: number): string[] {
-		const lines: string[] = [];
-		// Header
-		lines.push(this.theme.bold(this.theme.fg("accent", "  pi-crew Settings")));
-		lines.push(this.renderTabBar(width));
-		lines.push("─".repeat(Math.min(width - 2, 70)));
+		// Border wrapper — same style as RunDashboard
+		const innerWidth = Math.max(30, width - 4);
+		const borderWidth = Math.min(innerWidth, Math.max(0, width - 2));
+		const fg = (color: Parameters<CrewTheme["fg"]>[0], text: string) => this.theme.fg(color, text);
+		const borderFill = (count: number) => new DynamicCrewBorder(this.theme).render(Math.max(0, count))[0];
+		const border = (left: string, right: string) => `${fg("border", left)}${borderFill(borderWidth)}${fg("border", right)}`;
+		const row = (text: string) => `│ ${padToWidth(truncateToWidth(text, innerWidth - 1), innerWidth - 1)}│`;
 
-		if (this.submenu) {
-			lines.push(...this.submenu.render(width));
-			return lines;
+		const lines: string[] = [];
+
+		// ── Title bar ──
+		lines.push(border("╭", "╮"));
+		lines.push(row(`${fg("accent", "▐")} ${this.theme.bold("pi-crew Settings")}`));
+
+		// ── Tab bar ──
+		const tabLine = this.renderTabBarContent(innerWidth - 2);
+		lines.push(row(tabLine));
+		lines.push(border("├", "┤"));
+
+		// ── Content ──
+		const content = this.submenu
+			? this.renderSubmenuContent(innerWidth - 4)
+			: this.renderSettingsContent(innerWidth - 4);
+		for (const line of content) {
+			lines.push(row(` ${truncateToWidth(line, innerWidth - 2)}`));
 		}
 
+		// ── Bottom border ──
+		lines.push(border("╰", "╯"));
+
+		return lines;
+	}
+
+	private renderTabBarContent(innerWidth: number): string {
+		const parts: string[] = [];
+		for (const [i, tab] of TABS.entries()) {
+			const isActive = i === this.currentTabIndex;
+			const text = `${tab.icon} ${tab.label}`;
+			parts.push(isActive
+				? this.theme.bold(this.theme.fg("accent", text))
+				: this.theme.fg("dim", text),
+			);
+		}
+		return parts.join("  " + this.theme.fg("border", "│") + "  ");
+	}
+
+	private renderSettingsContent(innerWidth: number): string[] {
 		const tabId = TABS[this.currentTabIndex]?.id ?? "runtime";
 		const settings = SETTINGS.filter(s => s.tab === tabId);
+		const lines: string[] = [];
 
-		if (settings.length === 0) {
-			lines.push(this.theme.fg("muted", "  No settings in this tab."));
-		} else {
-			const visibleStart = this.scrollOffset;
-			const visibleEnd = Math.min(this.scrollOffset + this.maxVisible, settings.length);
-			for (let i = visibleStart; i < visibleEnd; i++) {
-				const def = settings[i]!;
-				const effective = this.changedValues.has(def.id) ? this.changedValues.get(def.id) : getNestedValue(this.config, def.id);
-				const valueStr = formatValue(effective, def.id);
-				const isSelected = i === this.selectedIndex;
-				const prefix = isSelected ? " → " : "   ";
-				const label = def.label.padEnd(24);
-				const line = `${prefix}${label} ${valueStr}`;
-				lines.push(truncate(isSelected ? (this.theme.inverse?.(line) ?? line) : line, width));
-			}
+		// Calculate max label width for alignment
+		const maxLabelWidth = Math.min(28, Math.max(...settings.map(s => visibleWidth(s.label))));
 
-			if (this.scrollOffset + this.maxVisible < settings.length) {
-				const remaining = settings.length - this.scrollOffset - this.maxVisible;
-				lines.push(this.theme.fg("dim", `  … +${remaining} more`));
+		// Render visible items
+		const startIdx = this.scrollOffset;
+		const endIdx = Math.min(startIdx + this.maxVisible, settings.length);
+
+		for (let i = startIdx; i < endIdx; i++) {
+			const def = settings[i];
+			if (!def) continue;
+			const isSelected = i === this.selectedIndex;
+
+			const effective = this.changedValues.has(def.id)
+				? this.changedValues.get(def.id)
+				: getNestedValue(this.config, def.id);
+			const isDefault = !this.changedValues.has(def.id) && !isExplicitlySet(this.config, def.id);
+			const valueStr = formatValue(effective, def.id);
+			const suffix = isDefault && (effective !== undefined || EFFECTIVE_DEFAULTS[def.id] !== undefined) ? " (default)" : "";
+
+			const prefix = isSelected ? " → " : "   ";
+			const labelPad = padToWidth(def.label, maxLabelWidth);
+			const valueMax = innerWidth - maxLabelWidth - 6 - prefix.length - suffix.length;
+			const valueText = truncateToWidth(valueStr, Math.max(10, valueMax));
+			const line = `${prefix}${labelPad}  ${this.theme.fg(isSelected ? "accent" : "muted", valueText)}${suffix ? this.theme.fg("dim", suffix) : ""}`;
+
+			if (isSelected) {
+				lines.push(this.theme.inverse?.(truncateToWidth(line, innerWidth)) ?? truncateToWidth(line, innerWidth));
+			} else {
+				lines.push(truncateToWidth(line, innerWidth));
 			}
 		}
 
-		// Description of selected setting
-		lines.push("");
+		// Scroll indicator
+		if (startIdx > 0 || endIdx < settings.length) {
+			const remaining = settings.length - endIdx;
+			const count = startIdx > 0 ? `↑${startIdx}` : "";
+			const below = remaining > 0 ? `↓${remaining}` : "";
+			const parts = [count, below].filter(Boolean);
+			if (parts.length > 0) {
+				lines.push(this.theme.fg("dim", `   (${this.selectedIndex + 1}/${settings.length}) ${parts.join(" ")}`));
+			}
+		}
+
+		// Description
 		const selectedDef = settings[this.selectedIndex];
 		if (selectedDef?.description) {
+			lines.push("");
 			lines.push(this.theme.fg("muted", `  ${selectedDef.description}`));
 		}
 
 		// Hints
 		lines.push("");
-		lines.push(this.theme.fg("dim", "  ↑↓ Navigate · Enter/Edit · Tab Switch · Esc Close"));
+		lines.push(this.theme.fg("dim", "  ↑↓ Navigate · Enter/Space change · Tab switch · Esc close"));
 
 		return lines;
 	}
 
-	private renderTabBar(width: number): string {
-		const parts: string[] = [];
-		for (const [i, tab] of TABS.entries()) {
-			const isActive = i === this.currentTabIndex;
-			const text = ` ${tab.icon} ${tab.label} `;
-			parts.push(isActive ? this.theme.bold(this.theme.fg("accent", text)) : this.theme.fg("dim", text));
-		}
-		return `  ${parts.join("│")}`;
+	private renderSubmenuContent(innerWidth: number): string[] {
+		if (!this.submenu) return [];
+		return this.submenu.render(innerWidth);
 	}
 
 	handleInput(data: string): void {
@@ -542,7 +573,7 @@ export class SettingsOverlay {
 			return;
 		}
 
-		// Tab navigation (Tab/Shift+Tab or Left/Right)
+		// Tab navigation
 		if (data === "\t" || data === "\x1b[C") {
 			this.currentTabIndex = (this.currentTabIndex + 1) % TABS.length;
 			this.selectedIndex = 0;
@@ -595,6 +626,7 @@ export class SettingsOverlay {
 				this.submenuSettingId = def.id;
 				this.submenu = new SelectSubmenu(
 					def.label,
+					def.description ?? "",
 					def.values,
 					typeof current === "string" ? current : def.values[0]!,
 					this.theme,
@@ -604,10 +636,7 @@ export class SettingsOverlay {
 						this.submenu = null;
 						this.submenuSettingId = null;
 					},
-					() => {
-						this.submenu = null;
-						this.submenuSettingId = null;
-					},
+					() => { this.submenu = null; this.submenuSettingId = null; },
 				);
 				break;
 			}
@@ -630,10 +659,7 @@ export class SettingsOverlay {
 						this.submenu = null;
 						this.submenuSettingId = null;
 					},
-					() => {
-						this.submenu = null;
-						this.submenuSettingId = null;
-					},
+					() => { this.submenu = null; this.submenuSettingId = null; },
 				);
 				break;
 			}
@@ -650,10 +676,7 @@ export class SettingsOverlay {
 						this.submenu = null;
 						this.submenuSettingId = null;
 					},
-					() => {
-						this.submenu = null;
-						this.submenuSettingId = null;
-					},
+					() => { this.submenu = null; this.submenuSettingId = null; },
 				);
 				break;
 			}
@@ -667,10 +690,7 @@ export class SettingsOverlay {
 						this.submenu = null;
 						this.submenuSettingId = null;
 					},
-					() => {
-						this.submenu = null;
-						this.submenuSettingId = null;
-					},
+					() => { this.submenu = null; this.submenuSettingId = null; },
 				);
 				break;
 			}
@@ -686,9 +706,10 @@ export class SettingsOverlay {
 	}
 }
 
-/**
- * Create the settings overlay wrapped in DynamicBorder for use with ctx.ui.custom().
- */
+// ---------------------------------------------------------------------------
+// Public factory
+// ---------------------------------------------------------------------------
+
 export function createSettingsOverlay(
 	config: Record<string, unknown>,
 	theme: CrewTheme,
