@@ -48,8 +48,14 @@
     "check:lazy-imports": "node scripts/check-lazy-imports.mjs",
     "typecheck": "tsc --noEmit && node --experimental-strip-types -e \"await import('./index.ts'); console.log('strip-types import ok')\"",
     "test": "npm run test:unit && npm run test:integration",
-    "test:unit": "node --experimental-strip-types --test --test-concurrency=1 --test-timeout=30000 test/unit/*.test.ts",
+    "test:unit": "node --experimental-strip-types --test --test-concurrency=4 --test-isolation=process --test-timeout=30000 test/unit/*.test.ts",
+    "test:watch": "node --experimental-strip-types --watch --test --test-concurrency=4 --test-isolation=process --test-timeout=30000 test/unit/*.test.ts",
     "test:integration": "node --experimental-strip-types --test --test-concurrency=1 --test-timeout=120000 test/integration/*.test.ts",
+    "build:bundle": "node scripts/build-bundle.mjs",
+    "bench": "node scripts/run-bench.mjs",
+    "bench:check": "node scripts/bench-check.mjs",
+    "bench:capture": "node scripts/run-bench.mjs && node -e \"require('node:fs').copyFileSync('test/bench/results.json','test/bench/baseline.json')\"",
+    "profile:startup": "node scripts/profile-startup.mjs",
     "smoke:pi": "pi install .",
     "smoke:release": "node scripts/release-smoke.mjs"
   },
@@ -80,6 +86,7 @@
     "@mariozechner/pi-agent-core": "^0.65.0",
     "@mariozechner/pi-ai": "^0.65.0",
     "@mariozechner/pi-coding-agent": "^0.65.0",
+    "esbuild": "^0.28.0",
     "typescript": "^5.9.3"
   },
   "peerDependenciesMeta": {

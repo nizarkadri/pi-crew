@@ -3,7 +3,7 @@ import type { AgentConfig } from "../agents/agent-config.ts";
 import type { CrewLimitsConfig, CrewRuntimeConfig } from "../config/config.ts";
 import type { ArtifactDescriptor, OperationTerminalEvidence, TeamRunManifest, TeamTaskState, UsageState } from "../state/types.ts";
 import { writeArtifact } from "../state/artifact-store.ts";
-import { appendEvent } from "../state/event-log.ts";
+import { appendEvent, appendEventFireAndForget } from "../state/event-log.ts";
 import { saveRunManifest } from "../state/state-store.ts";
 import { createTaskClaim } from "../state/task-claims.ts";
 import { createWorkerHeartbeat, touchWorkerHeartbeat } from "./worker-heartbeat.ts";
@@ -175,7 +175,10 @@ export async function runTeamTask(input: TaskRunnerInput): Promise<{ manifest: T
 			const summary = progressEventSummary(task, event);
 			const decision = shouldAppendProgressEventUpdate({ previous: lastRunProgressSummary, next: summary, nowMs: now, lastAppendMs: lastRunProgressPersistedAt || undefined, minIntervalMs: 1000, force });
 			if (decision.shouldAppend) {
-				appendEvent(manifest.eventsPath, { type: "task.progress", runId: manifest.runId, taskId: task.id, data: { ...summary, coalesceReason: decision.reason } });
+				// 2.2 caller migration: high-frequency task.progress goes through
+				// the buffered path; loss-on-kill is acceptable because progress
+				// is informational and re-derivable from per-agent records.
+				appendEventFireAndForget(manifest.eventsPath, { type: "task.progress", runId: manifest.runId, taskId: task.id, data: { ...summary, coalesceReason: decision.reason } });
 				lastRunProgressSummary = summary;
 				lastRunProgressPersistedAt = now;
 			}

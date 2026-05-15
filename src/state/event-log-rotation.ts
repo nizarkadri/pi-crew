@@ -9,7 +9,10 @@ export interface RotationConfig {
 }
 
 const DEFAULT_ROTATION_CONFIG: RotationConfig = {
-	maxFileSizeBytes: 5 * 1024 * 1024,
+	// 2.3: lowered from 5 MB to 4 MB so the file stays small enough that
+	// `tail -c MAX_TAIL_BYTES` reads in run-snapshot-cache (default 32 KB)
+	// always cover a useful slice and rotations happen earlier.
+	maxFileSizeBytes: 4 * 1024 * 1024,
 	maxEventCount: 50_000,
 	compactToCount: 1_000,
 };

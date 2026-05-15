@@ -34,23 +34,48 @@ function rotateOldFiles(dir: string, retentionDays: number, now = Date.now()): v
 export function createMetricFileSink(opts: MetricFileSinkOptions): MetricSink {
 	const dir = path.join(opts.crewRoot, "state", "metrics");
 	const retentionDays = opts.retentionDays ?? 7;
+	// 4.1: hold a single open fd per UTC date instead of `appendFileSync` per
+	// snapshot. Avoids open/close syscalls each tick and keeps the
+	// synchronous write semantics that callers (and tests) expect.
+	let fd: number | undefined;
+	let fdDate: string | undefined;
+	const ensureFd = (date: string): number => {
+		if (fd !== undefined && fdDate === date) return fd;
+		if (fd !== undefined) {
+			try { fs.closeSync(fd); } catch (error) { logInternalError("metric-sink.closeFd", error); }
+		}
+		fs.mkdirSync(dir, { recursive: true });
+		rotateOldFiles(dir, retentionDays);
+		fd = fs.openSync(path.join(dir, `${date}.jsonl`), "a");
+		fdDate = date;
+		return fd;
+	};
 	const writeSnapshot = (snapshots: MetricSnapshot[]): void => {
 		try {
 			const now = new Date();
 			const date = now.toISOString().slice(0, 10);
-			fs.mkdirSync(dir, { recursive: true });
-			rotateOldFiles(dir, retentionDays);
 			const redacted = redactSecrets(snapshots);
 			if (!Array.isArray(redacted)) {
 				logInternalError("metric-sink.type", new Error("redactSecrets did not return an array"), `got=${typeof redacted}`);
 				return;
 			}
-			fs.appendFileSync(path.join(dir, `${date}.jsonl`), `${JSON.stringify({ exportedAt: now.toISOString(), snapshots: redacted as MetricSnapshot[] })}\n`, "utf-8");
+			const target = ensureFd(date);
+			fs.writeSync(target, `${JSON.stringify({ exportedAt: now.toISOString(), snapshots: redacted as MetricSnapshot[] })}\n`);
 		} catch (error) {
 			logInternalError("metric-sink.write", error);
 		}
 	};
 	const timer = setInterval(() => writeSnapshot(opts.registry.snapshot()), opts.intervalMs ?? 60_000);
 	timer.unref();
-	return { writeSnapshot, dispose: () => clearInterval(timer) };
+	return {
+		writeSnapshot,
+		dispose: () => {
+			clearInterval(timer);
+			if (fd !== undefined) {
+				try { fs.closeSync(fd); } catch (error) { logInternalError("metric-sink.dispose", error); }
+				fd = undefined;
+				fdDate = undefined;
+			}
+		},
+	};
 }

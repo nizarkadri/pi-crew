@@ -72,7 +72,9 @@ export function updatePiCrewPowerbar(events: EventBus, cwd: string, config?: Cre
 	const active = runs.map((run) => {
 		let snapshot: RunUiSnapshot | undefined;
 		try {
-			snapshot = snapshotCache?.get(run.runId) ?? snapshotCache?.refreshIfStale(run.runId);
+			// 1.2: render path is read-only. Use cache.get() only; the background
+			// preload loop in register.ts populates entries on its own cadence.
+			snapshot = snapshotCache?.get(run.runId);
 		} catch (error) {
 			logInternalError("powerbar.snapshot", error, run.runId);
 		}
@@ -86,8 +88,8 @@ export function updatePiCrewPowerbar(events: EventBus, cwd: string, config?: Cre
 		return { run, agents, tasks: readTasks(run.tasksPath), snapshot };
 	}).filter((item) => isDisplayActiveRun(item.run, item.agents));
 	if (!active.length) {
-		lastEmittedActive = undefined;
-		lastEmittedProgress = undefined;
+		lastActiveKey = undefined;
+		lastProgressKey = undefined;
 		safeEmit(events, "powerbar:update", { id: "pi-crew-active" });
 		safeEmit(events, "powerbar:update", { id: "pi-crew-progress" });
 		if (useStatusFallback) setStatusFallback(ctx, undefined);
@@ -109,34 +111,54 @@ export function updatePiCrewPowerbar(events: EventBus, cwd: string, config?: Cre
 	const activeText = `crew ${running}a/${waiting}w${liveRunning > 0 ? `/${liveRunning}live` : ""}${notificationBadge(notificationCount)}`;
 	const activeSuffix = [model, tokenText].filter(Boolean).join(" · ") || undefined;
 	const progressSuffix = `${completed}/${total}${tokenText ? ` · ${tokenText}` : ""}`;
-	const activeKey = `${activeText}|${activeSuffix ?? ""}|${running}`;
-	const progressKey = `${(active[0]?.run as TeamRunManifest)?.team ?? "crew"}|${completed}/${total}|${tokenText ?? ""}`;
-	const changed = activeKey !== lastEmittedActive || progressKey !== lastEmittedProgress;
-	if (changed) {
-		lastEmittedActive = activeKey;
-		lastEmittedProgress = progressKey;
-		safeEmit(events, "powerbar:update", {
-			id: "pi-crew-active",
-			icon: "⚙",
-			text: activeText,
-			suffix: activeSuffix,
-			color: running ? "accent" : "warning",
-		});
-		safeEmit(events, "powerbar:update", {
-			id: "pi-crew-progress",
-			text: (active[0]?.run as TeamRunManifest)?.team ?? "crew",
-			bar: Math.round((completed / total) * 100),
-			suffix: progressSuffix,
-			color: completed === total ? "success" : "accent",
-			barSegments: 8,
-		});
+	const activePayload = {
+		id: "pi-crew-active",
+		icon: "⚙",
+		text: activeText,
+		suffix: activeSuffix,
+		color: running ? "accent" : "warning",
+	} as const;
+	const progressPayload = {
+		id: "pi-crew-progress",
+		text: (active[0]?.run as TeamRunManifest)?.team ?? "crew",
+		bar: Math.round((completed / total) * 100),
+		suffix: progressSuffix,
+		color: completed === total ? "success" : "accent",
+		barSegments: 8,
+	} as const;
+	// 1.8: dedup per segment using a key over every visible field. Previously
+	// the dedup string only carried text/suffix/running, so changes to `bar`
+	// (progress %) or `color` could be swallowed and stale UI emitted again
+	// later as a single noisy burst.
+	const activeKey = powerbarKey(activePayload);
+	const progressKey = powerbarKey(progressPayload);
+	if (activeKey !== lastActiveKey) {
+		lastActiveKey = activeKey;
+		safeEmit(events, "powerbar:update", activePayload);
+	}
+	if (progressKey !== lastProgressKey) {
+		lastProgressKey = progressKey;
+		safeEmit(events, "powerbar:update", progressPayload);
 	}
 	if (useStatusFallback) setStatusFallback(ctx, `${activeText}${activeSuffix ? ` · ${activeSuffix}` : ""} · ${progressSuffix}`);
 }
 
 // --- Dedup state: skip emit if segment data unchanged ---
-let lastEmittedActive: string | undefined;
-let lastEmittedProgress: string | undefined;
+let lastActiveKey: string | undefined;
+let lastProgressKey: string | undefined;
+
+interface PowerbarPayloadShape {
+	text?: string;
+	suffix?: string;
+	bar?: number;
+	color?: string;
+	icon?: string;
+	barSegments?: number;
+}
+
+function powerbarKey(payload: PowerbarPayloadShape): string {
+	return `${payload.text ?? ""}|${payload.suffix ?? ""}|${payload.bar ?? ""}|${payload.color ?? ""}|${payload.icon ?? ""}|${payload.barSegments ?? ""}`;
+}
 
 // --- Coalesced powerbar update ---
 
@@ -185,8 +207,8 @@ export function disposePowerbarCoalescer(): void {
 }
 
 export function clearPiCrewPowerbar(events: EventBus, ctx?: StatusContext): void {
-	lastEmittedActive = undefined;
-	lastEmittedProgress = undefined;
+	lastActiveKey = undefined;
+	lastProgressKey = undefined;
 	safeEmit(events, "powerbar:update", { id: "pi-crew-active" });
 	safeEmit(events, "powerbar:update", { id: "pi-crew-progress" });
 	setStatusFallback(ctx, undefined);
@@ -194,6 +216,6 @@ export function clearPiCrewPowerbar(events: EventBus, ctx?: StatusContext): void
 
 /** Reset dedup state on session lifecycle events. */
 export function resetPowerbarDedupState(): void {
-	lastEmittedActive = undefined;
-	lastEmittedProgress = undefined;
+	lastActiveKey = undefined;
+	lastProgressKey = undefined;
 }

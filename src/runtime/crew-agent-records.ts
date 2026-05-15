@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { TeamRunManifest, TeamTaskState } from "../state/types.ts";
-import { atomicWriteJson, readJsonFile } from "../state/atomic-write.ts";
+import { atomicWriteJson, atomicWriteJsonCoalesced, flushPendingAtomicWrites, readJsonFile } from "../state/atomic-write.ts";
 import { readJsonFileCoalesced } from "../utils/file-coalescer.ts";
 import type { CrewAgentProgress, CrewAgentRecord, CrewRuntimeKind } from "./crew-agent-runtime.ts";
 import { taskStatusToAgentStatus } from "./crew-agent-runtime.ts";
@@ -138,6 +138,10 @@ function setAsyncAgentReaderCache(filePath: string, entry: { expiresAt: number; 
 }
 
 export function readCrewAgents(manifest: TeamRunManifest): CrewAgentRecord[] {
+	// 2.5: ensure intra-process coalesced writes are visible to subsequent
+	// readers in the same process. Cross-process readers still see the file
+	// after at most one coalesce window (250 ms).
+	flushPendingAtomicWrites();
 	try {
 		const records = readJsonFileCoalesced(agentsPath(manifest), AGENT_READER_TTL_MS, () => readJsonFile<CrewAgentRecord[]>(agentsPath(manifest)) ?? []);
 		// Validate schema and deduplicate by id to handle concurrent write conflicts
@@ -200,6 +204,8 @@ export function saveCrewAgents(manifest: TeamRunManifest, records: CrewAgentReco
 	});
 }
 
+const TERMINAL_AGENT_STATUSES = new Set(["completed", "failed", "cancelled", "blocked"]);
+
 export function upsertCrewAgent(manifest: TeamRunManifest, record: CrewAgentRecord): void {
 	// Read current state
 	const existing = readCrewAgents(manifest);
@@ -207,13 +213,45 @@ export function upsertCrewAgent(manifest: TeamRunManifest, record: CrewAgentReco
 	const idIndex = new Map(existing.map((item, i) => [item.id, i]));
 	const merged: CrewAgentRecord[] = existing.map((item) => item.id === record.id ? record : item);
 	if (!idIndex.has(record.id)) merged.push(record);
-	saveCrewAgents(manifest, merged);
-	writeCrewAgentStatus(manifest, record);
+	// 2.5 caller migration: coalesce non-terminal progress writes; flush
+	// terminal statuses (completed/failed/cancelled/blocked) durably so
+	// downstream (notifier, dashboard health) sees them immediately.
+	if (TERMINAL_AGENT_STATUSES.has(record.status ?? "")) {
+		saveCrewAgents(manifest, merged);
+		writeCrewAgentStatus(manifest, record);
+	} else {
+		saveCrewAgentsCoalesced(manifest, merged);
+		writeCrewAgentStatusCoalesced(manifest, record);
+	}
 }
 
 export function writeCrewAgentStatus(manifest: TeamRunManifest, record: CrewAgentRecord): void {
 	ensureAgentStateDir(manifest, record.taskId);
 	atomicWriteJson(agentStatusPath(manifest, record.taskId), redactSecrets(record));
+}
+
+// 2.5 — coalesced variants. Buffer per-agent record + aggregate writes for
+// 250 ms. High-frequency progress updates collapse to one write per quiescence
+// window. Caller migration is opt-in; existing saveCrewAgents/
+// writeCrewAgentStatus remain durable for terminal events.
+const AGENT_COALESCE_MS = 250;
+
+export function saveCrewAgentsCoalesced(manifest: TeamRunManifest, records: CrewAgentRecord[]): void {
+	const filePath = agentsPath(manifest);
+	fs.mkdirSync(manifest.stateRoot, { recursive: true });
+	atomicWriteJsonCoalesced(filePath, redactSecrets(records), AGENT_COALESCE_MS);
+	asyncAgentReaderCache.delete(filePath);
+	for (const record of records) writeCrewAgentStatusCoalesced(manifest, record);
+}
+
+export function writeCrewAgentStatusCoalesced(manifest: TeamRunManifest, record: CrewAgentRecord): void {
+	ensureAgentStateDir(manifest, record.taskId);
+	atomicWriteJsonCoalesced(agentStatusPath(manifest, record.taskId), redactSecrets(record), AGENT_COALESCE_MS);
+}
+
+/** Flush all coalesced agent writes synchronously. Hook into cleanup paths. */
+export function flushPendingAgentWrites(): void {
+	flushPendingAtomicWrites();
 }
 
 export function readCrewAgentStatus(manifest: TeamRunManifest, taskOrAgentId: string): CrewAgentRecord | undefined {

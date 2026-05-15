@@ -43,7 +43,21 @@ export function killProcessPid(pid: number): void {
 	if (!Number.isInteger(pid) || pid <= 0) return;
 	try {
 		if (process.platform === "win32") {
+			// 3.8: Windows path uses taskkill /T /F (force kill the entire tree).
+			// taskkill itself can silently fail (PID gone, permission denied, etc.)
+			// so verify after 2s and log a warning if the process is still alive.
 			spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+			const verifyTimer = setTimeout(() => {
+				try {
+					process.kill(pid, 0); // throws ESRCH when dead
+					// Still alive — log and retry once.
+					logInternalError("child-pi.taskkill-stuck", new Error(`process ${pid} still alive 2s after taskkill /T /F; retrying`), `pid=${pid}`);
+					try { spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }); } catch { /* best-effort */ }
+				} catch {
+					// ESRCH or EPERM — process is gone. OK.
+				}
+			}, 2000);
+			verifyTimer.unref();
 			return;
 		}
 		try {
@@ -440,12 +454,43 @@ export async function runChildPi(input: ChildPiRunInput): Promise<ChildPiRunResu
 				} catch {
 					// Ignore kill races.
 				}
+				// 3.5 — fast-escalate to SIGKILL within 200ms on explicit cancel
+				// so /team-cancel completes round-trip well under the operator
+				// expectation. The standard finalDrainMs / HARD_KILL_MS paths
+				// are for graceful drain, not user-initiated cancel.
+				const cancelHardKill = setTimeout(() => {
+					if (settled || childExited) return;
+					try {
+						hardKilled = true;
+						child.kill(process.platform === "win32" ? undefined : "SIGKILL");
+					} catch (error) {
+						logInternalError("child-pi.cancel-fast-kill", error, `pid=${child.pid}`);
+					}
+				}, 200);
+				cancelHardKill.unref();
 			};
 
 			input.signal?.addEventListener("abort", abort, { once: true });
+			// 3.1 — soft watermark backpressure. When inbound stdout exceeds
+			// 256KB before the next macrotask, pause for 50ms so the line
+			// observer + ancillary handlers get to drain. Prevents the runaway
+			// case where a chatty child saturates the parent event loop.
+			const BACKPRESSURE_HIGH = 256 * 1024;
+			let backpressureBytes = 0;
+			const releaseBackpressure = (): void => {
+				backpressureBytes = 0;
+				try { child.stdout?.resume(); } catch { /* ignore */ }
+			};
 			child.stdout?.on("data", (chunk: Buffer) => {
 				restartNoResponseTimer();
-				lineObserver.observe(chunk.toString("utf-8"));
+				const text = chunk.toString("utf-8");
+				backpressureBytes += text.length;
+				lineObserver.observe(text);
+				if (backpressureBytes > BACKPRESSURE_HIGH && child.stdout && !child.stdout.isPaused()) {
+					try { child.stdout.pause(); } catch { /* ignore */ }
+					const timer = setTimeout(releaseBackpressure, 50);
+					timer.unref();
+				}
 			});
 			child.stderr?.on("data", (chunk: Buffer) => {
 				restartNoResponseTimer();

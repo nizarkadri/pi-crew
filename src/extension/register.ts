@@ -6,7 +6,19 @@ import { loadConfig } from "../config/config.ts";
 import { registerAutonomousPolicy } from "./autonomous-policy.ts";
 import { startAsyncRunNotifier, stopAsyncRunNotifier, type AsyncNotifierState } from "./async-notifier.ts";
 import { notifyActiveRuns } from "./session-summary.ts";
-import { LiveRunSidebar } from "../ui/live-run-sidebar.ts";
+// 2.7: Lazy-load LiveRunSidebar — only constructed when the user actually opens
+// a live run sidebar overlay. The class pulls in transcript-viewer and other
+// heavy UI modules.
+import type { LiveRunSidebar as LiveRunSidebarType } from "../ui/live-run-sidebar.ts";
+let _cachedLiveRunSidebar: typeof LiveRunSidebarType | undefined;
+async function importLiveRunSidebar(): Promise<typeof LiveRunSidebarType> {
+	if (!_cachedLiveRunSidebar) {
+		// LAZY: defer LiveRunSidebar import until the user opens a sidebar overlay.
+		const mod = await import("../ui/live-run-sidebar.ts");
+		_cachedLiveRunSidebar = mod.LiveRunSidebar;
+	}
+	return _cachedLiveRunSidebar;
+}
 import { loadCrewSettings, applyCrewSettingsToConfig } from "../runtime/settings-store.ts";
 import { listLiveAgents } from "../runtime/live-agent-manager.ts";
 import { registerPiCrewRpc, type PiCrewRpcHandle } from "./cross-extension-rpc.ts";
@@ -22,7 +34,7 @@ import { SubagentManager } from "../subagents/manager.ts";
 import { __test__subagentSpawnParams, sendAgentWakeUp, sendFollowUp } from "./registration/subagent-helpers.ts";
 import { DEFAULT_NOTIFICATIONS, DEFAULT_UI } from "../config/defaults.ts";
 import { logInternalError } from "../utils/internal-error.ts";
-import { createManifestCache } from "../runtime/manifest-cache.ts";
+import { createManifestCache, ManifestCache, ManifestCache } from "../runtime/manifest-cache.ts";
 import { resetTimings, time } from "../utils/timings.ts";
 import { registerTeamCommands } from "./registration/commands.ts";
 import { registerSubagentTools } from "./registration/subagent-tools.ts";
@@ -36,15 +48,47 @@ import { runEventBus } from "../ui/run-event-bus.ts";
 import { CrewScheduler } from "../runtime/scheduler.ts";
 import { NotificationRouter, type NotificationDescriptor } from "./notification-router.ts";
 import { createJsonlSink, type NotificationSink } from "./notification-sink.ts";
-import { projectCrewRoot } from "../utils/paths.ts";
+import { clearProjectRootCache, projectCrewRoot } from "../utils/paths.ts";
+import { closeWatcher, watchCrewState } from "../utils/fs-watch.ts";
 import { summarizeHeartbeats } from "../ui/heartbeat-aggregator.ts";
 import { createMetricRegistry, type MetricRegistry } from "../observability/metric-registry.ts";
 import { wireEventToMetrics, type EventToMetricSubscription } from "../observability/event-to-metric.ts";
 import { createMetricFileSink, type MetricSink } from "../observability/metric-sink.ts";
-import { OTLPExporter } from "../observability/exporters/otlp-exporter.ts";
+// 2.7: Lazy-load OTLPExporter — only loaded when otlp.enabled=true. The
+// exporter pulls in node:http/https and serialization helpers that 99% of
+// users never need.
+import type { OTLPExporter as OTLPExporterType } from "../observability/exporters/otlp-exporter.ts";
+let _cachedOTLPExporter: typeof OTLPExporterType | undefined;
+async function importOTLPExporter(): Promise<typeof OTLPExporterType> {
+	if (!_cachedOTLPExporter) {
+		// LAZY: opt-in OTLP metric export — load only when otlp.enabled=true.
+		const mod = await import("../observability/exporters/otlp-exporter.ts");
+		_cachedOTLPExporter = mod.OTLPExporter;
+	}
+	return _cachedOTLPExporter;
+}
 import { HeartbeatWatcher } from "../runtime/heartbeat-watcher.ts";
 import { appendDeadletter } from "../runtime/deadletter.ts";
-import { cancelOrphanedRuns, detectInterruptedRuns, purgeStaleActiveRunIndex, reconcileAllStaleRuns } from "../runtime/crash-recovery.ts";
+// 2.7: Lazy-load crash-recovery helpers — only invoked from session_start
+// deferred cleanup and cleanupRuntime. Each function is awaited inside an
+// async context that already runs after registration completes.
+import type { cancelOrphanedRuns as CancelOrphanedRunsFn, detectInterruptedRuns as DetectInterruptedRunsFn, purgeStaleActiveRunIndex as PurgeStaleActiveRunIndexFn } from "../runtime/crash-recovery.ts";
+let _cachedCrashRecovery: { cancelOrphanedRuns: typeof CancelOrphanedRunsFn; detectInterruptedRuns: typeof DetectInterruptedRunsFn; purgeStaleActiveRunIndex: typeof PurgeStaleActiveRunIndexFn } | undefined;
+async function importCrashRecovery(): Promise<NonNullable<typeof _cachedCrashRecovery>> {
+	if (!_cachedCrashRecovery) {
+		// LAZY: defer crash-recovery (~14 KB) until session_start cleanup runs.
+		const mod = await import("../runtime/crash-recovery.ts");
+		_cachedCrashRecovery = { cancelOrphanedRuns: mod.cancelOrphanedRuns, detectInterruptedRuns: mod.detectInterruptedRuns, purgeStaleActiveRunIndex: mod.purgeStaleActiveRunIndex };
+	}
+	return _cachedCrashRecovery;
+}
+function purgeStaleActiveRunIndexSyncIfLoaded(): void {
+	// cleanupRuntime runs synchronously; only purge if we've already loaded
+	// crash-recovery during the session. Otherwise skip — next session_start
+	// will purge.
+	if (!_cachedCrashRecovery) return;
+	try { _cachedCrashRecovery.purgeStaleActiveRunIndex(); } catch (error) { logInternalError("register.cleanupRuntime.purgeStale", error); }
+}
 import { pruneFinishedRuns, pruneUserLevelRuns } from "../extension/run-maintenance.ts";
 import { DeliveryCoordinator } from "../runtime/delivery-coordinator.ts";
 import { OverflowRecoveryTracker } from "../runtime/overflow-recovery.ts";
@@ -98,7 +142,7 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 	let eventMetricSub: EventToMetricSubscription | undefined;
 	let metricSink: MetricSink | undefined;
 	let heartbeatWatcher: HeartbeatWatcher | undefined;
-	let otlpExporter: OTLPExporter | undefined;
+	let otlpExporter: OTLPExporterType | undefined;
 	let deliveryCoordinator: DeliveryCoordinator | undefined;
 	let overflowTracker: OverflowRecoveryTracker | undefined;
 	const configureNotifications = (ctx: ExtensionContext): void => {
@@ -142,8 +186,16 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		eventMetricSub = wireEventToMetrics(pi.events, metricRegistry);
 		if (config.telemetry?.enabled !== false) metricSink = createMetricFileSink({ crewRoot: projectCrewRoot(ctx.cwd), registry: metricRegistry, retentionDays: config.observability?.metricRetentionDays ?? 7 });
 		if (config.otlp?.enabled === true && config.otlp.endpoint) {
-			otlpExporter = new OTLPExporter({ endpoint: config.otlp.endpoint, headers: config.otlp.headers, intervalMs: config.otlp.intervalMs }, metricRegistry);
-			otlpExporter.start();
+			const otlpEndpoint = config.otlp.endpoint;
+			const otlpHeaders = config.otlp.headers;
+			const otlpInterval = config.otlp.intervalMs;
+			const owningRegistry = metricRegistry;
+			// LAZY: opt-in OTLP export — load the exporter module on first enable.
+			void importOTLPExporter().then((Ctor) => {
+				if (cleanedUp || metricRegistry !== owningRegistry || !owningRegistry) return;
+				otlpExporter = new Ctor({ endpoint: otlpEndpoint, headers: otlpHeaders, intervalMs: otlpInterval }, owningRegistry);
+				otlpExporter.start();
+			}).catch((error: unknown) => logInternalError("register.otlp-lazy-import", error));
 		}
 		heartbeatWatcher = new HeartbeatWatcher({
 			cwd: ctx.cwd,
@@ -160,9 +212,14 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		});
 		heartbeatWatcher.start();
 		if (config.reliability?.autoRecover === true) {
-			for (const plan of detectInterruptedRuns(ctx.cwd, getManifestCache(ctx.cwd))) {
-				notifyOperator({ id: `recovery_prompt_${plan.runId}`, severity: "warning", source: "crash-recovery", runId: plan.runId, title: `Run ${plan.runId} was interrupted`, body: `${plan.resumableTasks.length} tasks pending recovery. Open dashboard to inspect before resuming.` });
-			}
+			const cwdSnapshot = ctx.cwd;
+			const cacheSnapshot = getManifestCache(cwdSnapshot);
+			void importCrashRecovery().then(({ detectInterruptedRuns }) => {
+				if (cleanedUp) return;
+				for (const plan of detectInterruptedRuns(cwdSnapshot, cacheSnapshot)) {
+					notifyOperator({ id: `recovery_prompt_${plan.runId}`, severity: "warning", source: "crash-recovery", runId: plan.runId, title: `Run ${plan.runId} was interrupted`, body: `${plan.resumableTasks.length} tasks pending recovery. Open dashboard to inspect before resuming.` });
+				}
+			}).catch((error: unknown) => logInternalError("register.crash-recovery-lazy-import", error));
 		}
 	};
 	const autoRecoveryLast = new Map<string, number>();
@@ -250,11 +307,12 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 	const renderSchedulerUnsubscribers: Array<() => void> = [];
 	let crewScheduler: CrewScheduler | undefined;
 	let preloadTimer: ReturnType<typeof setTimeout> | undefined;
-	const disposeRenderSchedulerSubscriptions = (): void => {
-		for (const unsub of renderSchedulerUnsubscribers.splice(0)) {
-			try { unsub(); } catch (error) { logInternalError("register.renderScheduler.unsubscribe", error); }
-		}
-	};
+	// 1.3: optional native FS watcher on `<crewRoot>/state` — when running on
+	// a filesystem that supports recursive fs.watch (Windows NTFS, macOS, modern
+	// Linux), file changes (manifest/tasks/events/agents) trigger an
+	// immediate cache invalidate via renderScheduler.schedule. Falls back to
+	// poll-only behavior on systems where fs.watch errors.
+	let crewWatcher: import("node:fs").FSWatcher | undefined;
 	const stopSessionBoundSubagents = (): void => {
 		for (const controller of foregroundControllers.values()) controller.abort();
 		foregroundControllers.clear();
@@ -282,13 +340,16 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		widgetState.lastKey = "pi-crew-active";
 		widgetState.model = undefined;
 		const width = Math.min(90, Math.max(40, uiConfig?.dashboardWidth ?? DEFAULT_UI.dashboardWidth));
-		void showCustom<undefined>(ctx, (_tui, theme, _keybindings, done) => new LiveRunSidebar({ cwd: ctx.cwd, runId, done, theme, config: uiConfig, snapshotCache: getRunSnapshotCache(ctx.cwd) }), {
-			overlay: true,
-			overlayOptions: { width, minWidth: 40, maxHeight: "100%", anchor: "top-right", offsetX: 0, offsetY: 0, margin: { top: 0, right: 0, bottom: 0, left: 0 }, visible: (termWidth: number) => termWidth >= 100 },
-		}).finally(() => {
-			if (liveSidebarRunId === runId) liveSidebarRunId = undefined;
-			updateCrewWidget(ctx, widgetState, loadConfig(ctx.cwd).config.ui, getManifestCache(ctx.cwd), getRunSnapshotCache(ctx.cwd));
-		});
+		void importLiveRunSidebar().then((LiveRunSidebar) => {
+			if (cleanedUp || !currentCtx) return;
+			void showCustom<undefined>(ctx, (_tui, theme, _keybindings, done) => new LiveRunSidebar({ cwd: ctx.cwd, runId, done, theme, config: uiConfig, snapshotCache: getRunSnapshotCache(ctx.cwd) }), {
+				overlay: true,
+				overlayOptions: { width, minWidth: 40, maxHeight: "100%", anchor: "top-right", offsetX: 0, offsetY: 0, margin: { top: 0, right: 0, bottom: 0, left: 0 }, visible: (termWidth: number) => termWidth >= 100 },
+			}).finally(() => {
+				if (liveSidebarRunId === runId) liveSidebarRunId = undefined;
+				updateCrewWidget(ctx, widgetState, loadConfig(ctx.cwd).config.ui, getManifestCache(ctx.cwd), getRunSnapshotCache(ctx.cwd));
+			});
+		}).catch((error: unknown) => logInternalError("register.live-sidebar-lazy-import", error));
 	};
 	const startForegroundRun = (ctx: ExtensionContext, runner: (signal?: AbortSignal) => Promise<void>, runId?: string): void => {
 		const ownerGeneration = captureSessionGeneration();
@@ -370,6 +431,7 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		if (cleanedUp) return;
 		cleanedUp = true;
 		if (preloadTimer) { clearTimeout(preloadTimer); preloadTimer = undefined; }
+		closeWatcher(crewWatcher); crewWatcher = undefined;
 		stopSessionBoundSubagents();
 		crewScheduler?.stop();
 		stopAsyncRunNotifier(notifierState);
@@ -390,11 +452,9 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		// This handles: normal exit, SIGTERM, Ctrl+C — any case where cleanupRuntime fires.
 		// For SIGKILL / crash / SIGHUP (where cleanupRuntime does NOT fire),
 		// purgeStaleActiveRunIndex() runs at next session_start instead.
-		try {
-			purgeStaleActiveRunIndex();
-		} catch (error) {
-			logInternalError("register.cleanupRuntime.purgeStale", error);
-		}
+		// 2.7: only purge if crash-recovery has been loaded already; otherwise
+		// the next session_start will fire the lazy import + purge.
+		purgeStaleActiveRunIndexSyncIfLoaded();
 
 		stopCrewWidget(currentCtx, widgetState, currentCtx ? loadConfig(currentCtx.cwd).config.ui : undefined);
 		clearPiCrewPowerbar(pi.events, currentCtx);
@@ -415,7 +475,8 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		overflowTracker = undefined;
 		manifestCache.dispose();
 		runSnapshotCache.dispose?.();
-		disposeRenderSchedulerSubscriptions();
+		// 2.10: drop cached findRepoRoot results when the extension reloads.
+		clearProjectRootCache();
 		renderScheduler?.dispose();
 		renderScheduler = undefined;
 		autoRecoveryLast.clear();
@@ -452,27 +513,38 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		setTimeout(() => {
 			if (cleanedUp || sessionGeneration !== ownerGeneration) return; // session switched while we waited
 
-			// Auto-cancel orphaned runs
-			if (currentSessionId) {
+			// 2.7: load crash-recovery lazily once per session_start cleanup batch.
+			void (async () => {
+				let crashRecovery: Awaited<ReturnType<typeof importCrashRecovery>> | undefined;
+				try { crashRecovery = await importCrashRecovery(); } catch (error) {
+					logInternalError("register.sessionStart.lazyCrashRecovery", error);
+					return;
+				}
+				if (cleanedUp || sessionGeneration !== ownerGeneration) return;
+				const { cancelOrphanedRuns: cancelOrphanedRunsFn, purgeStaleActiveRunIndex: purgeStaleActiveRunIndexFn } = crashRecovery;
+
+				// Auto-cancel orphaned runs
+				if (currentSessionId) {
+					try {
+						const { cancelled } = cancelOrphanedRunsFn(ctx.cwd, getManifestCache(ctx.cwd), currentSessionId);
+						if (cancelled.length > 0) {
+							notifyOperator({ id: `orphan_cleanup`, severity: "info", source: "crash-recovery", title: `Cleaned up ${cancelled.length} orphaned run(s)`, body: `Runs from previous sessions were auto-cancelled: ${cancelled.join(", ")}` });
+						}
+					} catch (error) {
+						logInternalError("register.sessionStart.orphanCleanup", error);
+					}
+				}
+
+				// Global purge of stale active-run-index entries
 				try {
-					const { cancelled } = cancelOrphanedRuns(ctx.cwd, getManifestCache(ctx.cwd), currentSessionId);
-					if (cancelled.length > 0) {
-						notifyOperator({ id: `orphan_cleanup`, severity: "info", source: "crash-recovery", title: `Cleaned up ${cancelled.length} orphaned run(s)`, body: `Runs from previous sessions were auto-cancelled: ${cancelled.join(", ")}` });
+					const { purged } = purgeStaleActiveRunIndexFn();
+					if (purged.length > 0) {
+						notifyOperator({ id: `active_index_purge`, severity: "info", source: "crash-recovery", title: `Purged ${purged.length} stale active-run-index entr${purged.length === 1 ? "y" : "ies"}`, body: `Cleaned up global active run index` });
 					}
 				} catch (error) {
-					logInternalError("register.sessionStart.orphanCleanup", error);
+					logInternalError("register.sessionStart.globalIndexPurge", error);
 				}
-			}
-
-			// Global purge of stale active-run-index entries
-			try {
-				const { purged } = purgeStaleActiveRunIndex();
-				if (purged.length > 0) {
-					notifyOperator({ id: `active_index_purge`, severity: "info", source: "crash-recovery", title: `Purged ${purged.length} stale active-run-index entr${purged.length === 1 ? "y" : "ies"}`, body: `Cleaned up global active run index` });
-				}
-			} catch (error) {
-				logInternalError("register.sessionStart.globalIndexPurge", error);
-			}
+			})();
 
 			// Reconcile stale runs found on disk (not in active-run-index)
 			// These are ghost runs from crashed processes that were never cleaned up.
@@ -596,7 +668,13 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 			const config = lastPreloadedConfig?.config.ui;
 			const activeCache = lastFrameManifestCache ?? getManifestCache(currentCtx.cwd);
 			const snapshotCache = lastFrameSnapshotCache ?? getRunSnapshotCache(currentCtx.cwd);
-			const manifests = lastPreloadedManifests.length > 0 ? lastPreloadedManifests : activeCache.list(20);
+			// 1.1: keep render path zero-fs-IO. Always read from the preloaded
+			// frame; if it is empty (first tick after session_start, or cwd
+			// switched), kick off a background preload and render a skeleton
+			// (empty manifests). The preload will reschedule a render when the
+			// frame is ready, avoiding statSync(`runs/`) inside the hot path.
+			const manifests = lastPreloadedManifests;
+			if (!lastPreloadedConfig) backgroundPreload();
 			if (liveSidebarRunId) {
 				const placement = config?.widgetPlacement ?? DEFAULT_UI.widgetPlacement;
 				if (widgetState.lastVisibility !== "hidden" || widgetState.lastPlacement !== placement) {
@@ -675,6 +753,27 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		renderSchedulerUnsubscribers.push(unsubscribeRunEvents);
 		// Start async preload loop — refreshes snapshot cache in background
 		startPreloadLoop(fallbackMs, effectiveRefreshMs);
+		// 1.3: native FS watcher on `<crewRoot>/state`. Triggers an immediate
+		// renderScheduler.schedule({runId}) when files inside any run change so
+		// the snapshot cache invalidates well before the 1s preload tick. Falls
+		// back silently to poll-only behavior on systems where recursive
+		// fs.watch is not supported.
+		try {
+			closeWatcher(crewWatcher);
+			crewWatcher = undefined;
+			const stateDir = path.join(projectCrewRoot(ctx.cwd), "state");
+			const watcher = watchCrewState(stateDir, (runId) => {
+				if (cleanedUp || sessionGeneration !== ownerGeneration) return;
+				renderScheduler?.schedule({ runId });
+			}, (error) => {
+				logInternalError("register.crewWatcher.error", error);
+				closeWatcher(crewWatcher);
+				crewWatcher = undefined;
+			});
+			if (watcher) crewWatcher = watcher;
+		} catch (error) {
+			logInternalError("register.crewWatcher.start", error);
+		}
 	});
 	pi.on("session_before_switch", () => {
 		sessionGeneration++;
@@ -751,3 +850,15 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		}
 	} });
 }
+function disposeRenderSchedulerSubscriptions() {
+	throw new Error("Function not implemented.");
+}
+
+function reconcileAllStaleRuns(cwd: string, arg1: ManifestCache) {
+	throw new Error("Function not implemented.");
+}
+
+function reconcileAllStaleRuns(cwd: string, arg1: ManifestCache) {
+	throw new Error("Function not implemented.");
+}
+

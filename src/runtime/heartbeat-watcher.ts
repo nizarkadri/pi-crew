@@ -19,6 +19,13 @@ export interface HeartbeatWatcherOptions {
 	registry: MetricRegistry;
 	router: HeartbeatWatcherRouter;
 	deadletterTickThreshold?: number;
+	/**
+	 * 3.6 — minimum interval between repeated deadletter triggers for the same
+	 * runId+taskId. Without this, a flaky worker (dead → alive → dead) can
+	 * fire deadletter entries faster than the operator can respond. Default
+	 * 60_000 ms.
+	 */
+	deadletterCooldownMs?: number;
 	onDead?: (runId: string, taskId: string, elapsed: number) => void;
 	onDeadletterTrigger?: (manifest: TeamRunManifest, taskId: string) => void;
 }
@@ -36,6 +43,7 @@ export class HeartbeatWatcher {
 	private lastLevel = new Map<string, HeartbeatLevel>();
 	private consecutiveDead = new Map<string, number>();
 	private lastSeen = new Map<string, number>(); // key → last time it was active
+	private lastDeadletterTriggerAt = new Map<string, number>(); // 3.6 cooldown gate
 	/** Max age (ms) to retain a stale key before garbage-collecting it. */
 	private readonly maxKeyAgeMs = 600_000; // 10 minutes
 	private readonly opts: HeartbeatWatcherOptions;
@@ -50,7 +58,12 @@ export class HeartbeatWatcher {
 	}
 
 	private scheduleTick(): void {
-		this.timer = setTimeout(() => this.tick(), this.opts.pollIntervalMs ?? 5000);
+		// 3.2 — when at least one run has a dead-streak in progress, poll faster
+		// (1s) so operators get notified quickly. Healthy state stays at the
+		// configured interval (default 5s) to keep idle CPU near zero.
+		const baseInterval = this.opts.pollIntervalMs ?? 5000;
+		const interval = this.consecutiveDead.size > 0 ? Math.min(1000, baseInterval) : baseInterval;
+		this.timer = setTimeout(() => this.tick(), interval);
 		this.timer.unref();
 	}
 
@@ -94,7 +107,15 @@ export class HeartbeatWatcher {
 				if (level === "dead") {
 					const count = (this.consecutiveDead.get(key) ?? 0) + 1;
 					this.consecutiveDead.set(key, count);
-					if (count === tickThreshold) this.opts.onDeadletterTrigger?.(loaded.manifest, task.id);
+					if (count === tickThreshold) {
+						// 3.6 cooldown gate
+						const cooldown = this.opts.deadletterCooldownMs ?? 60_000;
+						const lastTrigger = this.lastDeadletterTriggerAt.get(key) ?? 0;
+						if (now - lastTrigger >= cooldown) {
+							this.lastDeadletterTriggerAt.set(key, now);
+							this.opts.onDeadletterTrigger?.(loaded.manifest, task.id);
+						}
+					}
 				} else {
 					this.consecutiveDead.delete(key);
 				}

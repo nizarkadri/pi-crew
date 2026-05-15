@@ -35,10 +35,10 @@ export function wireEventToMetrics(events: ExtensionAPI["events"] | undefined, r
 	const waitingCount = registry.counter("crew.task.waiting_total", "Tasks entering waiting state");
 	const supervisorContactCount = registry.counter("crew.task.supervisor_contact_total", "Supervisor contact requests by reason");
 	registry.gauge("crew.heartbeat.staleness_ms", "Heartbeat elapsed since last seen, milliseconds");
-	const runDuration = registry.histogram("crew.run.duration_ms", "Run end-to-end duration, milliseconds");
-	const taskDuration = registry.histogram("crew.task.duration_ms", "Task duration, milliseconds");
+	const runDuration = registry.histogram("crew.run.duration_ms", "Run end-to-end duration, milliseconds", [1000, 5000, 15000, 30000, 60000, 300000, 600000, 1800000]);
+	const taskDuration = registry.histogram("crew.task.duration_ms", "Task duration, milliseconds", [50, 200, 500, 1000, 5000, 30000, 120000]);
 	registry.histogram("crew.task.retry_count", "Retries per task", [0, 1, 2, 3, 5, 10]);
-	const tokenUsage = registry.histogram("crew.task.tokens_total", "Token usage per task");
+	const tokenUsage = registry.histogram("crew.task.tokens_total", "Token usage per task", [100, 500, 2000, 10000, 50000, 200000]);
 
 	const handlers: Array<[string, (data: unknown) => void]> = [
 		["crew.run.completed", (data) => { const item = recordValue(data); runCount.inc({ status: "completed" }); runDuration.observe({ team: stringValue(item.team, "unknown") }, numberValue(item.durationMs)); }],

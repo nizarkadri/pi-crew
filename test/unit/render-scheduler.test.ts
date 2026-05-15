@@ -26,7 +26,7 @@ test("RenderScheduler coalesces event bursts and disposes listeners", async () =
 	const events = new FakeEvents();
 	let renders = 0;
 	let invalidations = 0;
-	const scheduler = new RenderScheduler(events, () => { renders += 1; }, { debounceMs: 20, fallbackMs: 10_000, events: ["crew.run.completed"], onInvalidate: () => { invalidations += 1; } });
+	const scheduler = new RenderScheduler(events, () => { renders += 1; }, { debounceMs: 20, fallbackMs: 10_000, events: ["crew.run.completed"], onInvalidate: () => { invalidations += 1; }, invalidateCoalesceMs: 0 });
 	assert.equal(events.listenerCount("crew.run.completed"), 1);
 	events.emit("crew.run.completed", { runId: "one" });
 	events.emit("crew.run.completed", { runId: "one" });
@@ -38,6 +38,46 @@ test("RenderScheduler coalesces event bursts and disposes listeners", async () =
 	events.emit("crew.run.completed", { runId: "two" });
 	await sleep(30);
 	assert.equal(renders, 1);
+});
+
+test("RenderScheduler 1.9: per-runId invalidate coalesce collapses same-run bursts", async () => {
+	const events = new FakeEvents();
+	const invalidations: string[] = [];
+	const scheduler = new RenderScheduler(events, () => {}, {
+		debounceMs: 5,
+		fallbackMs: 10_000,
+		events: ["crew.subagent.completed"],
+		invalidateCoalesceMs: 30,
+		onInvalidate: (payload) => {
+			const runId = (payload as { runId?: string } | undefined)?.runId;
+			invalidations.push(runId ?? "<no-run>");
+		},
+	});
+	// Burst on the same run + one event on a different run.
+	for (let i = 0; i < 10; i++) events.emit("crew.subagent.completed", { runId: "burst", taskId: `t${i}` });
+	events.emit("crew.subagent.completed", { runId: "other" });
+	await sleep(60);
+	scheduler.dispose();
+	// Burst → 1 invalidate per distinct runId (2 total) instead of 11.
+	assert.equal(invalidations.length, 2);
+	assert.deepEqual([...invalidations].sort(), ["burst", "other"]);
+});
+
+test("RenderScheduler 1.9: payload without runId still invalidates immediately", () => {
+	const events = new FakeEvents();
+	let invalidations = 0;
+	const scheduler = new RenderScheduler(events, () => {}, {
+		debounceMs: 5,
+		fallbackMs: 10_000,
+		events: ["crew.mailbox.updated"],
+		invalidateCoalesceMs: 30,
+		onInvalidate: () => { invalidations += 1; },
+	});
+	// payload without runId — should not be coalesced.
+	events.emit("crew.mailbox.updated", { kind: "info" });
+	events.emit("crew.mailbox.updated", undefined);
+	assert.equal(invalidations, 2);
+	scheduler.dispose();
 });
 
 test("RenderScheduler fallback renders when no events arrive", async () => {

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import type { AgentConfig } from "../../agents/agent-config.ts";
 import type { CrewRuntimeConfig } from "../../config/config.ts";
 import { writeArtifact } from "../../state/artifact-store.ts";
-import { appendEvent } from "../../state/event-log.ts";
+import { appendEvent, appendEventFireAndForget } from "../../state/event-log.ts";
 import { loadRunManifestById } from "../../state/state-store.ts";
 import type { ArtifactDescriptor, TeamRunManifest, TeamTaskState } from "../../state/types.ts";
 import type { WorkflowStep } from "../../workflows/workflow-config.ts";
@@ -75,7 +75,8 @@ export async function runLiveTask(input: RunLiveTaskInput): Promise<RunLiveTaskO
 		const summary = progressEventSummary(task, event);
 		const decision = shouldAppendProgressEventUpdate({ previous: lastRunProgressSummary, next: summary, nowMs: now, lastAppendMs: lastRunProgressPersistedAt || undefined, minIntervalMs: 1000, force });
 		if (decision.shouldAppend) {
-			appendEvent(manifest.eventsPath, { type: "task.progress", runId: manifest.runId, taskId: task.id, data: { ...summary, coalesceReason: decision.reason } });
+			// 2.2 caller migration: see task-runner.ts.
+			appendEventFireAndForget(manifest.eventsPath, { type: "task.progress", runId: manifest.runId, taskId: task.id, data: { ...summary, coalesceReason: decision.reason } });
 			lastRunProgressSummary = summary;
 			lastRunProgressPersistedAt = now;
 		}

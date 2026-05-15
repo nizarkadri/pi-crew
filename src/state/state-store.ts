@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { TeamRunManifest, TeamTaskState } from "./types.ts";
 import { canTransitionRunStatus } from "./contracts.ts";
-import { atomicWriteJson, atomicWriteJsonAsync, readJsonFile } from "./atomic-write.ts";
+import { atomicWriteJson, atomicWriteJsonAsync, atomicWriteJsonCoalesced, readJsonFile } from "./atomic-write.ts";
 import { appendEvent } from "./event-log.ts";
 import { DEFAULT_CACHE, DEFAULT_PATHS } from "../config/defaults.ts";
 import { createRunId, createTaskId } from "../utils/ids.ts";
@@ -192,6 +192,19 @@ export async function saveRunManifestAsync(manifest: TeamRunManifest): Promise<v
 
 export function saveRunTasks(manifest: TeamRunManifest, tasks: TeamTaskState[]): void {
 	atomicWriteJson(manifest.tasksPath, tasks);
+	invalidateRunCache(manifest.stateRoot);
+}
+
+/**
+ * 2.1 caller-migration helper: coalesced variant. Use only when the
+ * caller does NOT immediately read tasks.json afterwards (the read would
+ * see the previous on-disk content while the write is still buffered).
+ * Bulk update paths that fan out into multiple writer call sites are the
+ * intended use case. Single-update + read-update loops (e.g.
+ * persistSingleTaskUpdate) should keep using saveRunTasks.
+ */
+export function saveRunTasksCoalesced(manifest: TeamRunManifest, tasks: TeamTaskState[]): void {
+	atomicWriteJsonCoalesced(manifest.tasksPath, tasks);
 	invalidateRunCache(manifest.stateRoot);
 }
 

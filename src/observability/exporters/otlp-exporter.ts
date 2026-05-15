@@ -1,8 +1,12 @@
+import { gzip } from "node:zlib";
+import { promisify } from "node:util";
 import { logInternalError } from "../../utils/internal-error.ts";
 import { redactSecrets } from "../../utils/redaction.ts";
 import type { MetricRegistry } from "../metric-registry.ts";
 import type { MetricSnapshot } from "../metrics-primitives.ts";
 import type { MetricExporter } from "./adapter.ts";
+
+const gzipAsync = promisify(gzip);
 
 export interface OTLPExporterOptions {
 	endpoint: string;
@@ -73,7 +77,17 @@ export class OTLPExporter implements MetricExporter {
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), timeoutMs);
 			try {
-				const response = await fetch(this.opts.endpoint, { method: "POST", headers: { "content-type": "application/json", ...(this.opts.headers ?? {}) }, body: JSON.stringify(convertToOTLP(snapshots)), signal: controller.signal });
+				// 4.2: gzip body. OTLP HTTP exporters of every flavour accept
+				// `content-encoding: gzip`; collectors expect uncompressed JSON
+				// otherwise. Saves bandwidth on metric-heavy runs (often 3-5x).
+				const json = JSON.stringify(convertToOTLP(snapshots));
+				const body = await gzipAsync(Buffer.from(json));
+				const response = await fetch(this.opts.endpoint, {
+					method: "POST",
+					headers: { "content-type": "application/json", "content-encoding": "gzip", ...(this.opts.headers ?? {}) },
+					body,
+					signal: controller.signal,
+				});
 				if (!response.ok) {
 					logInternalError("otlp-export-http", new Error(`HTTP ${response.status}: ${response.statusText}`), `endpoint=${this.opts.endpoint}`);
 				}

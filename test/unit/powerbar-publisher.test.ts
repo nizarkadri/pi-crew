@@ -157,3 +157,52 @@ test("compactTokens keeps short values and compacts thousands", () => {
 	assert.equal(compactTokens(999), "999");
 	assert.equal(compactTokens(1500), "2k");
 });
+
+test("powerbar dedups per-segment when payload unchanged across renders (1.8)", () => {
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-crew-powerbar-dedup-home-"));
+	const previousHome = process.env.PI_TEAMS_HOME;
+	process.env.PI_TEAMS_HOME = home;
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-crew-powerbar-dedup-"));
+	try {
+		fs.mkdirSync(path.join(cwd, ".crew"), { recursive: true });
+		const events: Array<{ event: string; data: unknown }> = [];
+		const bus = { emit: (event: string, data: unknown) => events.push({ event, data }) };
+		const team = { name: "dedup-team", description: "", roles: [{ name: "worker", agent: "worker" }], source: "test", filePath: "builtin" } as never;
+		const workflow = { name: "dedup-workflow", description: "", steps: [{ id: "one", role: "worker" }, { id: "two", role: "worker" }], source: "test", filePath: "builtin" } as never;
+		const created = createRunManifest({ cwd, team, workflow, goal: "powerbar dedup" });
+		saveRunManifest({ ...created.manifest, status: "running" });
+		const tasks = created.tasks.map((t, idx): TeamTaskState => ({ ...t, status: idx === 0 ? "completed" : "running" }));
+		saveRunTasks(created.manifest, tasks);
+		saveCrewAgents(created.manifest, [{ id: `${created.manifest.runId}:01`, runId: created.manifest.runId, taskId: tasks[1]?.id ?? "two", agent: "worker", role: "worker", runtime: "child-process", status: "running", startedAt: created.manifest.createdAt, progress: { recentTools: [], recentOutput: [], toolCount: 0, activityState: "active" } }]);
+
+		// Reset internal dedup state in case prior tests left it populated.
+		const before = events.length;
+		updatePiCrewPowerbar(bus, cwd);
+		const firstUpdates = events.slice(before).filter((e) => e.event === "powerbar:update");
+		// First call must emit both segments at least once.
+		assert.ok(firstUpdates.some((e) => payloadRecord(e.data).id === "pi-crew-active"));
+		assert.ok(firstUpdates.some((e) => payloadRecord(e.data).id === "pi-crew-progress"));
+
+		const afterFirst = events.length;
+		updatePiCrewPowerbar(bus, cwd);
+		updatePiCrewPowerbar(bus, cwd);
+		updatePiCrewPowerbar(bus, cwd);
+		// No new updates should be emitted because nothing changed.
+		const repeatedUpdates = events.slice(afterFirst).filter((e) => e.event === "powerbar:update");
+		assert.equal(repeatedUpdates.length, 0, `expected no re-emit, got ${repeatedUpdates.length}`);
+
+		// Now flip a task to completed → progress bar must change → progress segment must re-emit, active should also re-emit (running count drops).
+		const afterRepeat = events.length;
+		saveRunTasks(created.manifest, tasks.map((t, idx) => ({ ...t, status: idx === 0 ? "completed" : "completed" })));
+		saveCrewAgents(created.manifest, []);
+		updatePiCrewPowerbar(bus, cwd);
+		const reactedUpdates = events.slice(afterRepeat).filter((e) => e.event === "powerbar:update");
+		// Run is no longer active (no running agents); publisher emits clear payloads ({id} only).
+		assert.ok(reactedUpdates.some((e) => payloadRecord(e.data).id === "pi-crew-active" && payloadRecord(e.data).text === undefined));
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+		fs.rmSync(home, { recursive: true, force: true });
+		if (previousHome === undefined) delete process.env.PI_TEAMS_HOME;
+		else process.env.PI_TEAMS_HOME = previousHome;
+	}
+});

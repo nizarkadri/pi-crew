@@ -15,6 +15,29 @@ export function userPiRoot(): string {
 const PROJECT_DIR_MARKERS = [".git", ".pi", ".crew", ".hg", ".svn", ".factory", ".omc"];
 const PROJECT_FILE_MARKERS = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod", "pom.xml", "composer.json", "build.gradle", "build.gradle.kts"];
 
+// 2.10 — cache findRepoRoot results so repeated lookups during render ticks
+// (loadConfig, state-store helpers, powerbar, snapshot-cache, ...) skip the
+// 14 existsSync calls per ancestor level. TTL is short enough that a freshly
+// `git init`-ed marker is picked up within ~30s without forcing manual
+// invalidation in interactive sessions.
+const PROJECT_ROOT_CACHE_TTL_MS = 30_000;
+const PROJECT_ROOT_CACHE_MAX_ENTRIES = 32;
+interface ProjectRootCacheEntry {
+	repoRoot: string | undefined;
+	cachedAt: number;
+}
+const projectRootCache = new Map<string, ProjectRootCacheEntry>();
+
+function evictOldestProjectRoot(): void {
+	const oldest = projectRootCache.keys().next().value;
+	if (oldest !== undefined) projectRootCache.delete(oldest);
+}
+
+/** Drop all cached findRepoRoot results. Call from cleanupRuntime / tests. */
+export function clearProjectRootCache(): void {
+	projectRootCache.clear();
+}
+
 function hasProjectMarker(dir: string): boolean {
 	for (const marker of PROJECT_DIR_MARKERS) {
 		if (fs.existsSync(path.join(dir, marker))) return true;
@@ -26,7 +49,22 @@ function hasProjectMarker(dir: string): boolean {
 }
 
 export function findRepoRoot(cwd: string): string | undefined {
-	let current = path.resolve(cwd);
+	const startKey = path.resolve(cwd);
+	const cached = projectRootCache.get(startKey);
+	if (cached && Date.now() - cached.cachedAt < PROJECT_ROOT_CACHE_TTL_MS) {
+		// Re-insert to refresh LRU position.
+		projectRootCache.delete(startKey);
+		projectRootCache.set(startKey, cached);
+		return cached.repoRoot;
+	}
+	const result = computeRepoRoot(startKey);
+	projectRootCache.set(startKey, { repoRoot: result, cachedAt: Date.now() });
+	while (projectRootCache.size > PROJECT_ROOT_CACHE_MAX_ENTRIES) evictOldestProjectRoot();
+	return result;
+}
+
+function computeRepoRoot(start: string): string | undefined {
+	let current = start;
 	const root = path.parse(current).root;
 	const home = path.resolve(os.homedir());
 	const tempRoot = path.resolve(os.tmpdir());

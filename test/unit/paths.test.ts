@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findRepoRoot, projectPiRoot, userPiRoot } from "../../src/utils/paths.ts";
+import { clearProjectRootCache, findRepoRoot, projectPiRoot, userPiRoot } from "../../src/utils/paths.ts";
 
 test("findRepoRoot detects .git as project marker", () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-crew-paths-git-"));
@@ -114,5 +114,32 @@ test("userPiRoot respects PI_TEAMS_HOME override", () => {
 		fs.rmSync(tempHome, { recursive: true, force: true });
 		if (previous === undefined) delete process.env.PI_TEAMS_HOME;
 		else process.env.PI_TEAMS_HOME = previous;
+	}
+});
+
+
+test("findRepoRoot caches result and clearProjectRootCache resets it (2.10)", () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-crew-paths-cache-"));
+	fs.mkdirSync(path.join(cwd, ".git"), { recursive: true });
+	clearProjectRootCache();
+	try {
+		// 1st call: walks the tree, finds .git, returns the dir.
+		const first = findRepoRoot(cwd);
+		assert.equal(first, path.resolve(cwd));
+
+		// Now mask .git by removing it. Cache should still report the previous answer
+		// because the entry is fresh (TTL 30s).
+		fs.rmSync(path.join(cwd, ".git"), { recursive: true, force: true });
+		const cached = findRepoRoot(cwd);
+		assert.equal(cached, path.resolve(cwd), "cached entry expected within TTL window");
+
+		// After explicit clear, the lookup re-walks and returns undefined for the temp.
+		clearProjectRootCache();
+		const fresh = findRepoRoot(cwd);
+		// Without any marker, walk likely stops at tempRoot or returns undefined.
+		assert.notEqual(fresh, path.resolve(cwd));
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+		clearProjectRootCache();
 	}
 });

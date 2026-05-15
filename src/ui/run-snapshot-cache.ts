@@ -10,6 +10,7 @@ import { loadRunManifestById, loadRunManifestByIdAsync } from "../state/state-st
 import type { TeamRunManifest, TeamTaskState } from "../state/types.ts";
 import type { RunSnapshotCache as RunSnapshotCacheBase, RunUiGroupJoin, RunUiMailbox, RunUiProgress, RunUiSnapshot, RunUiUsage } from "./snapshot-types.ts";
 import { runEventBus } from "./run-event-bus.ts";
+import { sequencePath } from "../state/event-log.ts";
 
 export interface RunSnapshotCache extends RunSnapshotCacheBase {
 	preloadStale(runId: string): Promise<RunUiSnapshot | undefined>;
@@ -35,7 +36,6 @@ interface SnapshotStamps {
 	agents: FileStamp;
 	events: FileStamp;
 	mailbox: FileStamp;
-	output: FileStamp;
 }
 
 interface CacheEntry {
@@ -74,6 +74,32 @@ async function stampFileAsync(filePath: string | undefined): Promise<FileStamp> 
 	} catch {
 		return zeroStamp();
 	}
+}
+
+/**
+ * Sprint-1 / 1.4 — events stamp uses the `.seq` sidecar instead of stat-ing
+ * the JSONL itself. The sequence file is a few bytes long and the persisted
+ * counter monotonically increases even when the events log gets rotated and
+ * shrinks (rotation truncates `size` but keeps `seq` ascending). Encoding the
+ * counter into the size field keeps the FileStamp structure unchanged so
+ * `sameStamp` continues to work.
+ */
+function eventsStamp(eventsPath: string): FileStamp {
+	try {
+		const raw = fs.readFileSync(sequencePath(eventsPath), "utf-8");
+		const seq = Number.parseInt(raw.trim(), 10);
+		if (Number.isFinite(seq) && seq >= 0) return { mtimeMs: 0, size: seq + 1 };
+	} catch { /* fall through to legacy stat */ }
+	return stampFile(eventsPath);
+}
+
+async function eventsStampAsync(eventsPath: string): Promise<FileStamp> {
+	try {
+		const raw = await fs.promises.readFile(sequencePath(eventsPath), "utf-8");
+		const seq = Number.parseInt(raw.trim(), 10);
+		if (Number.isFinite(seq) && seq >= 0) return { mtimeMs: 0, size: seq + 1 };
+	} catch { /* fall through to legacy stat */ }
+	return stampFileAsync(eventsPath);
 }
 
 function combineStamps(stamps: FileStamp[]): FileStamp {
@@ -145,8 +171,7 @@ function sameStamps(a: SnapshotStamps, b: SnapshotStamps): boolean {
 		&& sameStamp(a.tasks, b.tasks)
 		&& sameStamp(a.agents, b.agents)
 		&& sameStamp(a.events, b.events)
-		&& sameStamp(a.mailbox, b.mailbox)
-		&& sameStamp(a.output, b.output);
+		&& sameStamp(a.mailbox, b.mailbox);
 }
 
 function readTasks(tasksPath: string): TeamTaskState[] {
@@ -527,7 +552,7 @@ function cancellationReasonFromEvents(events: TeamEvent[]): string | undefined {
 	return [...events].reverse().find((event) => event.type === "run.cancelled" && typeof event.data?.reason === "string")?.data?.reason as string | undefined;
 }
 
-function signatureFor(input: Omit<RunUiSnapshot, "signature" | "fetchedAt">, stamps: SnapshotStamps): string {
+function signatureFor(input: Omit<RunUiSnapshot, "signature" | "fetchedAt" | "sliceSignatures">, stamps: SnapshotStamps): string {
 	try {
 		const digest = createHash("sha256");
 		digest.update(JSON.stringify({
@@ -550,27 +575,52 @@ function signatureFor(input: Omit<RunUiSnapshot, "signature" | "fetchedAt">, sta
 	}
 }
 
-function stampsFor(manifest: TeamRunManifest, agents: CrewAgentRecord[]): SnapshotStamps {
+/**
+ * 1.6 / 1.7 — compute one short hash per logical slice of the snapshot so
+ * dashboard panes / widget can short-circuit when their slice hasn't moved.
+ * The slice contents must mirror what `signatureFor` packs into each branch.
+ */
+function sliceSignaturesFor(input: Omit<RunUiSnapshot, "signature" | "fetchedAt" | "sliceSignatures">): RunUiSnapshot["sliceSignatures"] {
+	const hash = (value: unknown): string => {
+		try {
+			return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 12);
+		} catch {
+			return String(Date.now());
+		}
+	};
+	return {
+		tasks: hash(input.tasks.map((task) => [task.id, task.status, task.startedAt, task.finishedAt, task.agentProgress, task.usage])),
+		agents: hash(input.agents.map((agent) => [agent.id, agent.status, agent.startedAt, agent.completedAt, agent.toolUses, agent.progress, agent.usage, agent.model])),
+		mailbox: hash([input.mailbox, input.groupJoins]),
+		progress: hash([input.progress, input.usage, input.cancellationReason]),
+		events: hash(input.recentEvents.map((event) => [event.metadata?.seq, event.time, event.type, event.taskId, event.message, event.data?.reason])),
+	};
+}
+
+function stampsFor(manifest: TeamRunManifest, _agents: CrewAgentRecord[]): SnapshotStamps {
+	// 1.4: use events sequence file instead of stat-ing the events log directly.
+	// 1.5: drop per-agent output.log stamping; rely on event-bus invalidation
+	// (`crew.subagent.*` and stream events) and on agents.json mtime which
+	// updates whenever crew-agent-records.appendCrewAgentOutput touches the
+	// aggregate. Saves O(N) statSync per render tick.
 	return {
 		manifest: stampFile(path.join(manifest.stateRoot, "manifest.json")),
 		tasks: stampFile(manifest.tasksPath),
 		agents: stampFile(agentsPath(manifest)),
-		events: stampFile(manifest.eventsPath),
+		events: eventsStamp(manifest.eventsPath),
 		mailbox: mailboxStamp(manifest),
-		output: outputStamp(manifest, agents),
 	};
 }
 
-async function stampsForAsync(manifest: TeamRunManifest, agents: CrewAgentRecord[]): Promise<SnapshotStamps> {
-	const [manifestStamp, tasksStamp, agentsStamp, eventsStamp, mailbox, output] = await Promise.all([
+async function stampsForAsync(manifest: TeamRunManifest, _agents: CrewAgentRecord[]): Promise<SnapshotStamps> {
+	const [manifestStamp, tasksStamp, agentsStamp, eventsStampValue, mailbox] = await Promise.all([
 		stampFileAsync(path.join(manifest.stateRoot, "manifest.json")),
 		stampFileAsync(manifest.tasksPath),
 		stampFileAsync(agentsPath(manifest)),
-		stampFileAsync(manifest.eventsPath),
+		eventsStampAsync(manifest.eventsPath),
 		mailboxStampAsync(manifest),
-		outputStampAsync(manifest, agents),
 	]);
-	return { manifest: manifestStamp, tasks: tasksStamp, agents: agentsStamp, events: eventsStamp, mailbox, output };
+	return { manifest: manifestStamp, tasks: tasksStamp, agents: agentsStamp, events: eventsStampValue, mailbox };
 }
 
 export function createRunSnapshotCache(cwd: string, options: RunSnapshotCacheOptions = {}): RunSnapshotCache {
@@ -637,7 +687,7 @@ export function createRunSnapshotCache(cwd: string, options: RunSnapshotCacheOpt
 			recentOutputLines: recentOutputLines(loaded.manifest, agents, recentOutputLimit),
 		};
 		const stamps = stampsFor(loaded.manifest, agents);
-		const snapshot: RunUiSnapshot = { ...base, fetchedAt: Date.now(), signature: signatureFor(base, stamps) };
+		const snapshot: RunUiSnapshot = { ...base, fetchedAt: Date.now(), signature: signatureFor(base, stamps), sliceSignatures: sliceSignaturesFor(base) };
 		return { snapshot, stamps, loadedAtMs: snapshot.fetchedAt, lastAccessMs: snapshot.fetchedAt };
 	}
 
@@ -683,7 +733,7 @@ export function createRunSnapshotCache(cwd: string, options: RunSnapshotCacheOpt
 			recentOutputLines: recentOutput,
 		};
 		const stamps = await stampsForAsync(loaded.manifest, agents);
-		const snapshot: RunUiSnapshot = { ...base, fetchedAt: Date.now(), signature: signatureFor(base, stamps) };
+		const snapshot: RunUiSnapshot = { ...base, fetchedAt: Date.now(), signature: signatureFor(base, stamps), sliceSignatures: sliceSignaturesFor(base) };
 		return { snapshot, stamps, loadedAtMs: snapshot.fetchedAt, lastAccessMs: snapshot.fetchedAt };
 	}
 
@@ -693,9 +743,8 @@ export function createRunSnapshotCache(cwd: string, options: RunSnapshotCacheOpt
 			manifest: stampFile(path.join(manifest.stateRoot, "manifest.json")),
 			tasks: stampFile(manifest.tasksPath),
 			agents: stampFile(agentsPath(manifest)),
-			events: stampFile(manifest.eventsPath),
+			events: eventsStamp(manifest.eventsPath),
 			mailbox: mailboxStamp(manifest),
-			output: outputStamp(previous.snapshot.manifest, previous.snapshot.agents),
 		};
 	}
 
