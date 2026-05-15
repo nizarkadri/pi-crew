@@ -324,12 +324,42 @@ export function registerTeamCommands(pi: ExtensionAPI, deps: RegisterTeamCommand
 	} });
 
 	pi.registerCommand("team-settings", {
-		description: "View or update pi-crew settings: [list|get <key>|set <key> <value>|unset <key>|path|scope]",
-		handler: async (args: string, ctx: ExtensionCommandContext) => {
-			const result = await handleTeamTool({ action: "settings", config: { args: args.trim() } }, teamCommandContext(ctx));
-			await notifyCommandResult(ctx, commandText(result));
-		},
-	});
+	description: "View or update pi-crew settings: interactive UI or [list|get <key>|set <key> <value>|unset <key>|path|scope]",
+	handler: async (args: string, ctx: ExtensionCommandContext) => {
+		if (ctx.hasUI && !args.trim()) {
+			const [{ updateConfig, parseConfig }, { asCrewTheme }, { createSettingsOverlay }] = await Promise.all([
+				import("../../config/config.ts"),
+				import("../../ui/theme-adapter.ts"),
+				import("../../ui/settings-overlay.ts"),
+			]);
+			const loaded = loadConfig(ctx.cwd);
+			const config = loaded.config as Record<string, unknown>;
+			await ctx.ui.custom<undefined>((_tui, _theme, _keybindings, done) => {
+				const theme = asCrewTheme(_theme);
+				const { overlay } = createSettingsOverlay(config, theme, (id: string, value: unknown) => {
+					try {
+						const patch: Record<string, unknown> = {};
+						const keys = id.split(".");
+						let target: Record<string, unknown> = patch;
+						for (let i = 0; i < keys.length - 1; i++) {
+							if (!target[keys[i]!] || typeof target[keys[i]!] !== "object") target[keys[i]!] = {};
+							target = target[keys[i]!] as Record<string, unknown>;
+						}
+						target[keys[keys.length - 1]!] = value;
+						if (value === undefined) { updateConfig({}, { unsetPaths: [id] }); }
+						else { updateConfig(parseConfig(patch)); }
+					} catch (error) {
+						ctx.ui.notify(`Failed to save: ${error instanceof Error ? error.message : String(error)}`, "error");
+					}
+				}, () => done(undefined));
+				return overlay;
+			}, { overlay: true, overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center" } });
+			return;
+		}
+		const result = await handleTeamTool({ action: "settings", config: { args: args.trim() } }, teamCommandContext(ctx));
+		await notifyCommandResult(ctx, commandText(result));
+	},
+})
 
 	pi.registerCommand("team-cleanup", { description: "Open a simple pi-crew interactive manager", handler: handleTeamManagerCommand });
 
