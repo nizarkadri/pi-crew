@@ -17,7 +17,7 @@ export interface RunSnapshotCache extends RunSnapshotCacheBase {
 	preloadAllStale(runIds: string[]): Promise<void>;
 }
 
-const DEFAULT_TTL_MS = 500;
+const DEFAULT_TTL_MS = 1500;
 const DEFAULT_MAX_ENTRIES = 24;
 const DEFAULT_RECENT_EVENTS = 20;
 const DEFAULT_RECENT_OUTPUT_LINES = 20;

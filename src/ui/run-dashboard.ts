@@ -49,7 +49,7 @@ export interface RunDashboardSelection {
 	action: RunDashboardAction;
 }
 
-const TASK_READ_TTL_MS = 200;
+const TASK_READ_TTL_MS = 1000;
 
 function formatAge(iso: string | undefined): string | undefined {
 	if (!iso) return undefined;
@@ -330,97 +330,95 @@ export class RunDashboard implements DashboardComponent {
 			const fg = (color: Parameters<CrewTheme["fg"]>[0], text: string) => this.theme.fg(color, text);
 			const borderFill = (count: number) => new DynamicCrewBorder(this.theme).render(count)[0];
 			const border = (left: string, right: string) => `${fg("border", left)}${borderFill(borderWidth)}${fg("border", right)}`;
+			const row = (text: string) => `│ ${pad(truncate(text, innerWidth - 1), innerWidth - 1)}│`;
+			const sep = () => border("├", "┤");
 			
-			const lines = [
+			const lines: string[] = [
 				border("╭", "╮"),
-				`│ ${pad(truncate(`${fg("accent", "▐")} ${this.theme.bold(this.options.placement === "right" ? "pi-crew right sidebar (anchored top-right)" : "pi-crew dashboard")}`, innerWidth - 1), innerWidth - 1)}│`,
-				`│ ${pad(truncate(`Runs: ${this.runs.length} • ${countByStatus(this.runs, this.options.snapshotCache)}`, innerWidth - 1), innerWidth - 1)}│`,
-				`│ ${pad(truncate(`↑/↓ select • 1 agents 2 progress 3 mailbox 4 output 5 health 6 metrics • s/u/a/i actions • R/K/D health • H hush`, innerWidth - 1), innerWidth - 1)}│`,
-				border("├", "┤"),
+				row(`${fg("accent", "▐")} ${this.theme.bold(this.options.placement === "right" ? "pi-crew sidebar" : "pi-crew dashboard")}`),
+				row(`Runs: ${this.runs.length} · ${countByStatus(this.runs, this.options.snapshotCache)}  ·  1-6 panes · ↑↓ nav · Esc close`),
+				sep(),
 			];
+
 			if (this.runs.length === 0) {
-				lines.push(`│ ${pad(truncate("No runs found.", innerWidth - 1), innerWidth - 1)}│`);
+				lines.push(row("No runs found."));
 			} else {
+				// Run list
 				const rows = groupedRuns(this.runs, this.options.snapshotCache).slice(0, 16);
-				const selectableRuns = rows.filter((row) => row.run);
-				for (const row of rows) {
-					if (!row.run) {
-						lines.push(`│ ${pad(truncate(fg("accent", row.label), innerWidth - 1), innerWidth - 1)}│`);
+				const selectableRuns = rows.filter((r) => r.run);
+				for (const row_ of rows) {
+					if (!row_.run) {
+						lines.push(row(fg("dim", `── ${row_.label} ──`)));
 						continue;
 					}
-					const index = selectableRuns.findIndex((candidate) => candidate.run?.runId === row.run?.runId);
-					const rowSnapshot = snapshotFor(row.run, this.options.snapshotCache);
-					const rowRun = rowSnapshot?.manifest ?? row.run;
-					const rowAgents = rowSnapshot?.agents ?? agentsFor(row.run, this.options.snapshotCache);
-					const rowStatus = isLikelyOrphanedActiveRun(rowRun, rowAgents) ? "stale" : (rowRun.status as RunStatus);
+					const index = selectableRuns.findIndex((c) => c.run?.runId === row_.run?.runId);
+					const rowSnap = snapshotFor(row_.run, this.options.snapshotCache);
+					const rowRun = rowSnap?.manifest ?? row_.run;
+					const rowAgents = rowSnap?.agents ?? agentsFor(row_.run, this.options.snapshotCache);
+					const rowStatus: RunStatus = isLikelyOrphanedActiveRun(rowRun, rowAgents) ? "stale" : (rowRun.status as RunStatus);
 					const label = runLabel(rowRun, index === this.selected, this.options.snapshotCache);
-					lines.push(`│ ${pad(applyStatusColor(this.theme, rowStatus, label), innerWidth - 1)}│`);
+					lines.push(row(applyStatusColor(this.theme, rowStatus, label)));
 				}
+
+				// Selected run detail
 				const selectedRun = selectedRunFromGrouped(this.runs, this.selected, this.options.snapshotCache);
 				if (selectedRun) {
-					const selectedSnapshot = snapshotFor(selectedRun, this.options.snapshotCache);
-					const selectedDisplayRun = selectedSnapshot?.manifest ?? selectedRun;
-					const selectedAgents = selectedSnapshot?.agents ?? agentsFor(selectedRun, this.options.snapshotCache);
-					lines.push(border("├", "┤"));
-					const details = [
-						`Selected: ${selectedDisplayRun.runId}`,
-						`Status: ${isLikelyOrphanedActiveRun(selectedDisplayRun, selectedAgents) ? "stale" : selectedDisplayRun.status} | Team: ${selectedDisplayRun.team} | Workflow: ${selectedDisplayRun.workflow ?? "none"}`,
-						`Created: ${selectedDisplayRun.createdAt}`,
-						`Updated: ${selectedDisplayRun.updatedAt}`,
-						`Artifacts: ${selectedDisplayRun.artifacts.length} | Workspace: ${selectedDisplayRun.workspaceMode}`,
-						selectedDisplayRun.async ? `Async: pid=${selectedDisplayRun.async.pid ?? "unknown"} log=${selectedDisplayRun.async.logPath}` : "Async: no",
-						`Goal: ${selectedDisplayRun.goal}`,
-					];
-					const paneLines = selectedSnapshot
+					const snap = snapshotFor(selectedRun, this.options.snapshotCache);
+					const r = snap?.manifest ?? selectedRun;
+					const agents = snap?.agents ?? agentsFor(selectedRun, this.options.snapshotCache);
+					lines.push(sep());
+					
+					// Compact run header
+					const statusStr = isLikelyOrphanedActiveRun(r, agents) ? "stale" : r.status;
+					const teamStr = `${r.team}/${r.workflow ?? "default"}`;
+					lines.push(row(`${fg("accent", "▸")} ${r.runId.slice(-12)} · ${statusStr} · ${teamStr}`));
+					lines.push(row(fg("dim", `  ${r.goal.slice(0, innerWidth - 10)}`)));
+
+					// Pane header
+					const paneNames: Record<string, string> = { agents: "Agents", progress: "Progress", mailbox: "Mailbox", output: "Output", health: "Health", metrics: "Metrics" };
+					lines.push(row(fg("dim", `── ${paneNames[this.activePane] ?? this.activePane} ──`)));
+
+					// Pane content
+					const paneLines = snap
 						? this.activePane === "agents"
-							? renderAgentsPane(selectedSnapshot, this.options)
+							? renderAgentsPane(snap, this.options)
 							: this.activePane === "progress"
-								? renderProgressPane(selectedSnapshot)
+								? renderProgressPane(snap)
 								: this.activePane === "mailbox"
-									? renderMailboxPane(selectedSnapshot)
+									? renderMailboxPane(snap)
 									: this.activePane === "health"
-										? renderHealthPane(selectedSnapshot, { isForeground: selectedDisplayRun.async ? false : true })
+										? renderHealthPane(snap, { isForeground: !r.async })
 										: this.activePane === "metrics"
-											? renderMetricsPane(selectedSnapshot, { registry: this.options.registry })
-											: renderTranscriptPane(selectedSnapshot)
+											? renderMetricsPane(snap, { registry: this.options.registry })
+											: renderTranscriptPane(snap)
 						: [
-							...readAgentPreview(selectedDisplayRun, this.showFullProgress ? 20 : 8, this.options),
-							...readProgressPreview(selectedDisplayRun, this.showFullProgress ? 20 : 5),
-						];
-					for (const detail of [
-						...details,
-						`Pane: ${this.activePane}`,
-						...paneLines,
-						...(this.showFullProgress ? readProgressPreview(selectedDisplayRun, 20) : []),
-					]) {
-						lines.push(`│ ${pad(truncate(detail, innerWidth - 1), innerWidth - 1)}│`);
+						...readAgentPreview(r, this.showFullProgress ? 20 : 6, this.options),
+						...readProgressPreview(r, this.showFullProgress ? 20 : 3),
+					];
+					for (const line of paneLines.slice(0, 20)) {
+						lines.push(row(truncate(line, innerWidth - 2)));
 					}
-					const selectedTasks = selectedSnapshot?.tasks ?? readRunTasks(selectedDisplayRun, this.options.snapshotCache);
-					// Live-session context %: pick the first running agent with stats
+
+					// Footer
+					const selectedTasks = snap?.tasks ?? readRunTasks(r, this.options.snapshotCache);
 					let contextPercent: number | undefined;
-					let contextWindow: number | undefined;
-					for (const agent of selectedAgents) {
+					for (const agent of agents) {
 						if (agent.status === "running" && agent.runtime === "live-session") {
 							const pct = getLiveAgentContextPercent(agent.taskId);
-							if (pct != null) {
-								contextPercent = pct;
-								// window size isn't exposed by getSessionStats; leave undefined
-								break;
-							}
+							if (pct != null) { contextPercent = pct; break; }
 						}
 					}
 					const footer = new CrewFooter({
-						pwd: selectedDisplayRun.cwd,
-						runId: selectedDisplayRun.runId,
-						status: isLikelyOrphanedActiveRun(selectedDisplayRun, selectedAgents) ? "stale" : selectedDisplayRun.status,
+						pwd: r.cwd,
+						runId: r.runId,
+						status: isLikelyOrphanedActiveRun(r, agents) ? "stale" : r.status,
 						usage: aggregateUsage(selectedTasks),
 						contextPercent,
-						contextWindow,
-						badges: [`team ${selectedDisplayRun.team}`, `workflow ${selectedDisplayRun.workflow ?? "none"}`, `${selectedDisplayRun.artifacts.length} artifacts`, selectedDisplayRun.workspaceMode, (() => { const live = listLiveAgents().filter((a) => a.runId === selectedDisplayRun.runId && a.status === "running"); return live.length > 0 ? `● ${live.length} live` : undefined; })()].filter((s): s is string => Boolean(s)),
+						badges: [`team ${r.team}`, `${r.artifacts.length} artifacts`, r.workspaceMode].filter(Boolean),
 					}, this.theme);
-					lines.push(border("├", "┤"));
+					lines.push(sep());
 					for (const footerLine of footer.render(innerWidth - 1)) {
-						lines.push(`│ ${pad(truncate(footerLine, innerWidth - 1), innerWidth - 1)}│`);
+						lines.push(row(truncate(footerLine, innerWidth - 1)));
 					}
 				}
 			}

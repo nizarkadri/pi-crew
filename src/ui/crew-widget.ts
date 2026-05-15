@@ -143,43 +143,22 @@ function agentStats(agent: CrewAgentRecord, liveHandle?: LiveAgentHandle): strin
 	const parts: string[] = [];
 	if (liveHandle) {
 		const act = liveHandle.activity;
-		const model = liveHandle.modelName;
-		// G3: Turn counter with limit
-		if (act.maxTurns != null) parts.push(`\u27F3${act.turnCount}\u2264${act.maxTurns}`);
-		else if (act.turnCount > 0) parts.push(`\u27F3${act.turnCount}`);
-		if (act.toolUses > 0) parts.push(`${act.toolUses} tool${act.toolUses === 1 ? "" : "s"}`);
-		// G4: Token + context % + compaction in one annotation
-		const tokenAnnot: string[] = [];
+		if (act.toolUses > 0) parts.push(`${act.toolUses} tools`);
+		const usage = getTaskUsage(liveHandle.taskId);
+		const total = (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheWrite ?? 0);
+		if (total > 0) parts.push(formatTokensCompact(total));
 		try {
 			const stats = liveHandle.session.getSessionStats?.();
 			const ctxPct = stats?.contextUsage?.percent;
-			if (ctxPct != null) {
-				// Note: color coding applied at render layer, not in widget string
-				tokenAnnot.push(`${Math.round(ctxPct)}%`);
-			}
+			if (ctxPct != null) parts.push(`${Math.round(ctxPct)}% ctx`);
 		} catch { /* ignore */ }
-		if (act.compactionCount > 0) tokenAnnot.push(`\u21BB${act.compactionCount}`);
-		const usage = getTaskUsage(liveHandle.taskId);
-		const total = (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheWrite ?? 0);
-		if (total > 0) {
-			const tokStr = formatTokensCompact(total);
-			if (tokenAnnot.length > 0) parts.push(`${tokStr} (${tokenAnnot.join(" · ")})`);
-			else parts.push(tokStr);
-		} else if (tokenAnnot.length > 0) {
-			parts.push(`(${tokenAnnot.join(" · ")})`);
-		}
-		// R7: Duration with (running) suffix + model name
 		const ms = (act.completedAtMs ?? Date.now()) - act.startedAtMs;
-		const dur = `${(ms / 1000).toFixed(1)}s`;
-		const durPart = liveHandle.status === "running" ? `${dur} (running)` : dur;
-		const modelPart = model && model !== "default" ? ` · ${model}` : "";
-		parts.push(durPart + modelPart);
+		parts.push(`${(ms / 1000).toFixed(1)}s`);
 	} else {
-		if (agent.toolUses) parts.push(`${agent.toolUses} tool${agent.toolUses === 1 ? "" : "s"}`);
+		if (agent.toolUses) parts.push(`${agent.toolUses} tools`);
 		if (agent.progress?.tokens) parts.push(formatTokensCompact(agent.progress.tokens));
-		if (agent.progress?.turns) parts.push(`\u27F3${agent.progress.turns}`);
 		const age = elapsed(agent.completedAt ?? agent.startedAt);
-		if (age) parts.push((agent.status === "running" || agent.status === "queued" || agent.status === "waiting") ? `${age} (running)` : age);
+		if (age) parts.push(age);
 	}
 	return parts.join(" · ");
 }
