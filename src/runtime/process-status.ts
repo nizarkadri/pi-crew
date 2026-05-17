@@ -8,7 +8,13 @@ export interface ProcessLiveness {
 	detail: string;
 }
 
-const ORPHANED_ACTIVE_RUN_MS = 10 * 60 * 1000;
+/**
+ * How long (ms) a foreground team run with status "running" but no active agents
+ * survives before being flagged as orphaned. Reduced from 10min to 2min to
+ * improve UX: stuck foreground runs (e.g. planner with 0 tool calls) no longer
+ * linger for 10min before the dashboard shows them as stale.
+ */
+const ORPHANED_ACTIVE_RUN_MS = 2 * 60 * 1000;
 /** How long a completed run stays visible in the widget after completion. */
 const COMPLETED_VISIBILITY_GRACE_MS = 8000;
 /** Maximum age (ms) for an active run before it's considered stale.
@@ -39,13 +45,35 @@ export function isFinishedRunStatus(status: string): boolean {
 	return status === "completed" || status === "failed" || status === "cancelled" || status === "blocked";
 }
 
+/**
+ * Secondary threshold: runs that have been "running" for more than this without
+ * any active agents (all queued, no progress) are also considered orphaned.
+ * This catches foreground team runs where the planner got stuck with 0 tool calls.
+ */
+const ORPHANED_NO_PROGRESS_MS = 5 * 60 * 1000;
+
 export function isLikelyOrphanedActiveRun(run: TeamRunManifest, agents: CrewAgentRecord[] = [], now = Date.now(), staleMs = ORPHANED_ACTIVE_RUN_MS): boolean {
 	if (!isActiveRunStatus(run.status)) return false;
 	if (run.async?.pid !== undefined) return false;
 	const updatedAt = new Date(run.updatedAt).getTime();
-	if (!Number.isFinite(updatedAt) || now - updatedAt < staleMs) return false;
-	if (agents.length === 0) return run.summary === "Creating workflow prompts and placeholder results.";
-	return agents.every((agent) => agent.status === "queued" && !agent.completedAt && !agent.progress);
+	if (!Number.isFinite(updatedAt)) return false;
+
+	// Primary check: run hasn't been updated in a while
+	if (now - updatedAt >= staleMs) {
+		if (agents.length === 0) return run.summary === "Creating workflow prompts and placeholder results.";
+		return agents.every((agent) => agent.status === "queued" && !agent.completedAt && !agent.progress);
+	}
+
+	// Secondary check: run has been running without any progress for too long
+	if (now - updatedAt >= ORPHANED_NO_PROGRESS_MS) {
+		// If no agent is "running" or has made progress, the run is likely stuck
+		const hasActiveAgent = agents.some((agent) => agent.status === "running" || agent.progress || agent.toolUses);
+		if (!hasActiveAgent && agents.length > 0) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 function hasDurableActiveAgentEvidence(agent: CrewAgentRecord): boolean {
