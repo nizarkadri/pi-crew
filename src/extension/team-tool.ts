@@ -30,9 +30,9 @@ import type { ArtifactDescriptor, TeamRunManifest, TeamTaskState } from "../stat
 // executeTeamRun is only called when a team run actually executes.
 import { executeTeamRun as _executeTeamRunFn } from "../runtime/team-runner.ts";
 type ExecuteTeamRunFn = typeof _executeTeamRunFn;
-let _cachedExecuteTeamRun: ExecuteTeamRunFn | undefined;
+let _cachedExecuteTeamRun: ExecuteTeamRunFn | undefined = undefined;
 async function executeTeamRun(...args: Parameters<ExecuteTeamRunFn>): Promise<Awaited<ReturnType<ExecuteTeamRunFn>>> {
-	if (!_cachedExecuteTeamRun) {
+	if (_cachedExecuteTeamRun === undefined) {
 		// LAZY: heavy runtime — defer 1.4s import cost until team run actually executes.
 		const mod = await import("../runtime/team-runner.ts");
 		_cachedExecuteTeamRun = mod.executeTeamRun;
@@ -54,9 +54,9 @@ import { handleApi } from "./team-tool/api.ts";
 // Static import fails silently in some jiti contexts (child-process), leaving handleRun undefined.
 import { handleRun as _handleRunFn } from "./team-tool/run.ts";
 type HandleRunFn = typeof _handleRunFn;
-let _cachedHandleRun: HandleRunFn | undefined;
+let _cachedHandleRun: HandleRunFn | undefined = undefined;
 async function handleRun(...args: Parameters<HandleRunFn>): Promise<Awaited<ReturnType<HandleRunFn>>> {
-	if (!_cachedHandleRun) {
+	if (_cachedHandleRun === undefined) {
 		// LAZY: run.ts pulls in spawnBackgroundTeamRun + resolveCrewRuntime; also avoids jiti import race in child-process contexts.
 		const mod = await import("./team-tool/run.ts");
 		_cachedHandleRun = mod.handleRun;
