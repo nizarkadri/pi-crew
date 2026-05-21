@@ -3,10 +3,11 @@ import type { NotificationDescriptor } from "../extension/notification-router.ts
 import type { MetricRegistry } from "../observability/metric-registry.ts";
 import { appendEvent } from "../state/event-log.ts";
 import { loadRunManifestById } from "../state/state-store.ts";
-import type { TeamRunManifest } from "../state/types.ts";
+import type { TeamRunManifest, TeamTaskState } from "../state/types.ts";
 import { logInternalError } from "../utils/internal-error.ts";
 import type { ManifestCache } from "./manifest-cache.ts";
 import { classifyHeartbeat, DEFAULT_GRADIENT_THRESHOLDS, heartbeatAgeMs, type GradientThresholds, type HeartbeatLevel } from "./heartbeat-gradient.ts";
+import type { WorkerHeartbeatState } from "./worker-heartbeat.ts";
 
 export interface HeartbeatWatcherRouter {
 	enqueue(notification: NotificationDescriptor): boolean;
@@ -29,6 +30,24 @@ export interface HeartbeatWatcherOptions {
 	deadletterCooldownMs?: number;
 	onDead?: (runId: string, taskId: string, elapsed: number) => void;
 	onDeadletterTrigger?: (manifest: TeamRunManifest, taskId: string) => void;
+}
+
+function effectiveHeartbeat(task: TeamTaskState): WorkerHeartbeatState | undefined {
+	if (task.heartbeat?.alive === false) return task.heartbeat;
+	const heartbeatAt = task.heartbeat?.lastSeenAt ? Date.parse(task.heartbeat.lastSeenAt) : Number.NaN;
+	const progressAt = task.agentProgress?.lastActivityAt ? Date.parse(task.agentProgress.lastActivityAt) : Number.NaN;
+	if (Number.isFinite(progressAt) && (!Number.isFinite(heartbeatAt) || progressAt > heartbeatAt)) {
+		return {
+			workerId: task.heartbeat?.workerId ?? task.id,
+			pid: task.heartbeat?.pid,
+			lastSeenAt: new Date(progressAt).toISOString(),
+			lastStdoutAt: task.heartbeat?.lastStdoutAt,
+			lastEventAt: task.heartbeat?.lastEventAt,
+			turnCount: task.heartbeat?.turnCount,
+			alive: task.heartbeat?.alive ?? true,
+		};
+	}
+	return task.heartbeat;
 }
 
 /**
@@ -96,8 +115,14 @@ export class HeartbeatWatcher {
 				activeKeys.add(key);
 				this.lastSeen.set(key, now);
 
-				const elapsed = heartbeatAgeMs(task.heartbeat, now);
-				const level = classifyHeartbeat(task.heartbeat, thresholds, now);
+				const heartbeat = effectiveHeartbeat(task);
+				const elapsed = heartbeatAgeMs(heartbeat, now);
+				const level = classifyHeartbeat(heartbeat, thresholds, now);
+				const heartbeatAt = task.heartbeat?.lastSeenAt ? Date.parse(task.heartbeat.lastSeenAt) : Number.NaN;
+				const progressAt = task.agentProgress?.lastActivityAt ? Date.parse(task.agentProgress.lastActivityAt) : Number.NaN;
+				if (Number.isFinite(progressAt) && (!Number.isFinite(heartbeatAt) || progressAt > heartbeatAt)) {
+					this.opts.registry.counter("crew.heartbeat.progress_fallback_total", "Heartbeat classifications that used task progress fallback evidence").inc({ runId: run.runId });
+				}
 				this.opts.registry.gauge("crew.heartbeat.staleness_ms", "Heartbeat elapsed since last seen, milliseconds").set({ runId: run.runId, taskId: task.id }, Number.isFinite(elapsed) ? elapsed : thresholds.deadMs);
 				this.opts.registry.counter("crew.heartbeat.level_total", "Heartbeat classifications by level").inc({ runId: run.runId, level });
 				const previous = this.lastLevel.get(key);
