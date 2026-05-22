@@ -1,4 +1,4 @@
-import { spawn, type SpawnOptions } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -110,7 +110,7 @@ export function getBackgroundRunnerCommand(
 	const memoryLimit = "--max-old-space-size=512";
 	if (loader.kind === "jiti") {
 		return {
-			args: [memoryLimit, "--import", pathToFileURL(loader.path).href, runnerPath, "--cwd", cwd, "--run-id", runId],
+			args: [memoryLimit, "--trace-uncaught", "--import", pathToFileURL(loader.path).href, runnerPath, "--cwd", cwd, "--run-id", runId],
 			loader: "jiti",
 		};
 	}
@@ -125,44 +125,44 @@ export interface SpawnBackgroundTeamRunResult {
 	logPath: string;
 }
 
-export function buildBackgroundSpawnOptions(manifest: TeamRunManifest, logFd: number): SpawnOptions {
-	// NOTE: Do NOT set PI_CREW_PARENT_PID for the background runner.
-	// The background runner is a top-level worker spawned by the team tool.
-	// When the team tool finishes, its process exits, and the background runner
-	// would incorrectly detect a "dead parent" and self-terminate.
-	// Child workers spawned BY the background runner will have the background
-	// runner as their parent, so they correctly die when the runner exits.
-	const { PI_CREW_PARENT_PID: _, ...envWithoutParentPid } = process.env;
-	// setsid creates a new session so the background runner is immune to terminal/SIGTERM.
-	// It is not in the Node.js 22.22.0 @types/node SpawnOptions; cast via unknown.
-	return {
-		cwd: manifest.cwd,
-		detached: true,
-		setsid: true,
-		stdio: ["ignore", logFd, logFd],
-		env: envWithoutParentPid,
-		windowsHide: true,
-	} as unknown as SpawnOptions;
-}
-
-export function spawnBackgroundTeamRun(manifest: TeamRunManifest): SpawnBackgroundTeamRunResult {
+export async function spawnBackgroundTeamRun(manifest: TeamRunManifest): Promise<SpawnBackgroundTeamRunResult> {
 	const runnerPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "background-runner.ts");
 	const logPath = path.join(manifest.stateRoot, "background.log");
 	fs.mkdirSync(manifest.stateRoot, { recursive: true });
-	const logFd = fs.openSync(logPath, "a");
-	try {
-		const loader = resolveTypeScriptLoader();
-		if (!loader) {
-			const message = buildLoaderUnavailableMessage(packageRootFromRuntime());
-			appendEvent(manifest.eventsPath, { type: "async.failed", runId: manifest.runId, message });
-			throw new Error(message);
-		}
-		const command = getBackgroundRunnerCommand(runnerPath, manifest.cwd, manifest.runId, loader);
-		fs.appendFileSync(logPath, `[pi-crew] background loader=${command.loader}\n`, "utf-8");
-		const child = spawn(process.execPath, command.args, buildBackgroundSpawnOptions(manifest, logFd));
-		child.unref();
-		return { pid: child.pid, logPath };
-	} finally {
-		fs.closeSync(logFd);
+
+	// NOTE: Do NOT set PI_CREW_PARENT_PID for the background runner.
+	const { PI_CREW_PARENT_PID: _, ...envWithoutParentPid } = process.env;
+
+	const loader = resolveTypeScriptLoader();
+	if (!loader) {
+		const message = buildLoaderUnavailableMessage(packageRootFromRuntime());
+		appendEvent(manifest.eventsPath, { type: "async.failed", runId: manifest.runId, message });
+		throw new Error(message);
 	}
+	const command = getBackgroundRunnerCommand(runnerPath, manifest.cwd, manifest.runId, loader);
+	fs.appendFileSync(logPath, `[pi-crew] background loader=${command.loader}\n`, "utf-8");
+
+	// Spawn the background runner as a fully detached process with its own session.
+	// BUG #17 FIX: setsid:true + detached:true creates a process that:
+	//   1. Has its own session (SID = PID) — immune to terminal/SIGTERM signals
+	//   2. Is detached (unref'd) — parent exit doesn't affect it
+	//   3. Has its own process group (PGID = PID) — process group kills don't reach it
+	//
+	// IMPORTANT: session_shutdown handlers must NOT kill async runners.
+	// See register.ts cleanupRuntime — the kill loop was commented out.
+	const child = spawn(process.execPath, command.args, {
+		cwd: manifest.cwd,
+		detached: true,
+		setsid: true as any,
+		stdio: ["ignore", "pipe", "pipe"],
+		env: envWithoutParentPid,
+		windowsHide: true,
+	} as any) as any;
+	child.on("error", (error: Error) => {
+		console.error(`[pi-crew] async spawn failed: ${error.message}`);
+	});
+	child.unref();
+
+	return { pid: child.pid, logPath };
 }
+

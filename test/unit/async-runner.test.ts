@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import * as os from "node:os";
-import { getBackgroundRunnerCommand, buildBackgroundSpawnOptions, resolveJitiRegisterPath, resolveTypeScriptLoader, nodeSupportsStripTypes } from "../../src/runtime/async-runner.ts";
+import { getBackgroundRunnerCommand, resolveJitiRegisterPath, resolveTypeScriptLoader, nodeSupportsStripTypes } from "../../src/runtime/async-runner.ts";
 import type { TeamRunManifest } from "../../src/state/types.ts";
 
 test("background runner uses the jiti runtime loader for installed TypeScript", () => {
@@ -82,27 +82,4 @@ test("getBackgroundRunnerCommand accepts loader-spec input directly", () => {
 	const command = getBackgroundRunnerCommand("/tmp/runner.ts", "/tmp/project", "run_123", { kind: "jiti", path: jitiPath });
 	assert.equal(command.loader, "jiti");
 	assert.match(command.args[1] ?? "", /jiti-register\.mjs$/);
-});
-
-test("background runner spawn options hide Windows console windows", () => {
-	const manifest: TeamRunManifest = {
-		schemaVersion: 1,
-		runId: "run_123",
-		team: "research",
-		workflow: "research",
-		goal: "test",
-		status: "running",
-		workspaceMode: "single",
-		createdAt: new Date().toISOString(),
-		updatedAt: new Date().toISOString(),
-		cwd: "/tmp/project",
-		stateRoot: "/tmp/project/.crew/state/runs/run_123",
-		artifactsRoot: "/tmp/project/.crew/artifacts/run_123",
-		tasksPath: "tasks.json",
-		eventsPath: "events.jsonl",
-		artifacts: [],
-	};
-	const options = buildBackgroundSpawnOptions(manifest, 1);
-	assert.equal(options.windowsHide, true);
-	assert.equal(options.detached, true);
 });

@@ -211,7 +211,7 @@ export function createManifestCache(cwd: string, options: ManifestCacheOptions =
 
 
 		const runs = [...unique.values()].filter((value): value is CachedManifest => value !== undefined).map((value) => value.manifest);
-		const sorted = runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+		const sorted = runs.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
 		const limited = sorted.slice(0, Math.max(0, limit));
 		if (manifestIndex.size > maxEntries) {
 			const removeCount = manifestIndex.size - maxEntries;

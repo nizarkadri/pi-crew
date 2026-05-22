@@ -489,16 +489,20 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		stopAsyncRunNotifier(notifierState);
 
 		// Best-effort: kill any async background runners that are still alive.
-		// Foreground child processes (team run tasks) are handled above.
-		try {
-			for (const manifest of manifestCache.list(50)) {
-				if (manifest.async?.pid !== undefined && checkProcessLiveness(manifest.async.pid).alive) {
-					killProcessPid(manifest.async.pid);
-				}
-			}
-		} catch (error) {
-			logInternalError("register.cleanupRuntime.killAsync", error);
-		}
+		// NOTE: Background runners are designed to outlive the Pi session.
+		// Do NOT kill them on session_shutdown — they manage their own lifecycle.
+		// Only kill foreground child processes (handled above via abort controllers).
+		// See Bug #17: killing async runners on session_shutdown was the root cause
+		// of the "background runner dies at ~35s" bug.
+		// try {
+		// 	for (const manifest of manifestCache.list(50)) {
+		// 		if (manifest.async?.pid !== undefined && checkProcessLiveness(manifest.async.pid).alive) {
+		// 			killProcessPid(manifest.async.pid);
+		// 		}
+		// 	}
+		// } catch (error) {
+		// 	logInternalError("register.cleanupRuntime.killAsync", error);
+		// }
 
 		// P0: Purge all stale active-run-index entries on session cleanup.
 		// This handles: normal exit, SIGTERM, Ctrl+C — any case where cleanupRuntime fires.

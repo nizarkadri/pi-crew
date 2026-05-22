@@ -33,7 +33,7 @@ const workflow: WorkflowConfig = {
 test("child Pi spawn options hide Windows console windows", () => {
 	const options = buildChildPiSpawnOptions("/tmp/project", { PATH: process.env.PATH ?? "" });
 	assert.equal(options.windowsHide, true);
-	assert.deepEqual(options.stdio, ["pipe", "pipe", "pipe"]);
+	assert.deepEqual(options.stdio, ["ignore", "pipe", "pipe"]); // stdin=ignore: child doesn't wait for input; task comes via CLI args (Bug #18 fix)
 });
 
 test("child Pi runtime writes JSONL transcript callbacks", async () => {

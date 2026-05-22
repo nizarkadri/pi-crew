@@ -121,7 +121,7 @@ export function readActiveRunRegistry(maxEntries = DEFAULT_CACHE.manifestMaxEntr
 	}
 	const entries = Array.isArray(parsed) ? parsed.map(normalizeEntry).filter((entry): entry is ActiveRunRegistryEntry => entry !== undefined) : [];
 	const byId = new Map<string, ActiveRunRegistryEntry>();
-	for (const entry of entries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
+	for (const entry of entries.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))) {
 		if (!byId.has(entry.runId)) byId.set(entry.runId, entry);
 	}
 	return [...byId.values()].slice(0, Math.max(0, maxEntries));
@@ -157,11 +157,17 @@ function filterAliveEntries(entries: ActiveRunRegistryEntry[]): ActiveRunRegistr
 			return false;
 		}
 		try {
-			const raw = JSON.parse(fs.readFileSync(entry.manifestPath, "utf-8")) as { status?: string; async?: { pid?: number } };
+			const raw = JSON.parse(fs.readFileSync(entry.manifestPath, "utf-8")) as { status?: string; async?: { pid?: number }; updatedAt?: string };
 			if (TERMINAL_STATUSES.has(raw.status ?? "")) return false;
 			// Dead PID = stale async run
 			if (raw.async?.pid) {
 				try { process.kill(raw.async.pid, 0); } catch { return false; }
+			}
+			// 2.19 — Stale non-async run: live-session/scaffold runs older than 30 min
+			// Without this, test runs that crash/leak would stay in the registry forever.
+			if (!raw.async) {
+				const updatedAt = typeof raw.updatedAt === 'string' ? Date.parse(raw.updatedAt) : NaN;
+				if (Number.isFinite(updatedAt) && Date.now() - updatedAt > 30 * 60 * 1000) return false;
 			}
 		} catch {
 			return false;

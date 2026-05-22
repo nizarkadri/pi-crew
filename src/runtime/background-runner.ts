@@ -97,26 +97,44 @@ function setupUnhandledRejectionGuard(state: { cwd?: string; runId?: string; eve
 	process.on("unhandledRejection", (reason, promise) => {
 		const message = reason instanceof Error ? reason.message : String(reason);
 		console.error("[background-runner] UNHANDLED REJECTION:", reason);
+		console.error("[background-runner] Stack:", reason instanceof Error ? reason.stack : "N/A");
 		try {
-			// Try to write async.failed event if we have the necessary state
 			if (state.eventsPath && state.runId) {
 				appendEvent(state.eventsPath, {
 					type: "async.failed",
 					runId: state.runId,
 					message: `Unhandled rejection: ${message}`,
-					data: { reason: String(reason), handled: false },
+					data: { reason: String(reason), stack: reason instanceof Error ? reason.stack : undefined, handled: false },
 				});
 			}
 		} catch (appendErr) {
 			console.error("[background-runner] Failed to write async.failed event:", appendErr);
 		}
+		// BUG #17 FIX: Do NOT call process.exit() here. Previously, unhandled
+		// rejection from child Pi workers would kill the entire background runner.
+		// Instead, set exitCode and let the run complete normally.
 		process.exitCode = 1;
-		// Give async operations a moment to flush before exit
-		setTimeout(() => process.exit(1), 100);
 	});
 }
 
 async function main(): Promise<void> {
+	// Redirect console to background.log since stdio is "ignore" in detached mode.
+	// Must be BEFORE any console.log/console.error calls.
+	const _cwd = argValue("--cwd");
+	const _runId = argValue("--run-id");
+	if (_cwd && _runId) {
+		try {
+			const logPath = path.join(_cwd, ".crew/state/runs", _runId, "background.log");
+			const logFd = fs.openSync(logPath, "a");
+			const origWrite = (prefix: string) => (data: any, ...args: any[]) => {
+				const msg = [data, ...args].map(String).join(" ") + "\n";
+				fs.writeSync(logFd, msg);
+			};
+			console.log = origWrite("OUT");
+			console.error = origWrite("ERR");
+		} catch { /* best-effort */ }
+	}
+
 	// Scrub macOS malloc vars BEFORE anything else — must be clean for all child processes
 	scrubProcessEnv();
 	// Install signal handlers EARLY — log events before exiting so we can distinguish
@@ -129,63 +147,58 @@ async function main(): Promise<void> {
 			if (loaded) appendEvent(loaded.manifest.eventsPath, { type: "async.failed", runId, message: `Background runner received ${sig} — exiting.`, data: { signal: sig, pid: process.pid } });
 		}
 	};
-	process.on("SIGTERM", () => {
-		// Capture caller identity via /proc/$ppid — Linux-specific
-		let callerInfo = "unknown";
-		let isPiProcess = false;
+	// BUG #17 DIAGNOSTIC: Write exit code to file for debugging.
+	process.on("exit", (code) => {
 		try {
-			const ppid = process.ppid;
-			callerInfo = `ppid=${ppid}`;
-			const cmdlinePath = `/proc/${ppid}/cmdline`;
-			const statPath = `/proc/${ppid}/stat`;
-			try {
-				const cmdline = require("node:fs").readFileSync(cmdlinePath, "utf8").replace(/\0/g, " ").trim();
-				const stat = require("node:fs").readFileSync(statPath, "utf8");
-				const statParts = stat.split(" ");
-				const ppidOfPpid = statParts[3];
-				callerInfo += ` cmdline="${cmdline.slice(0, 120)}" ppid_of_ppid=${ppidOfPpid}`;
-				// Check if sender is Pi process (infrastructure cleanup signal)
-				isPiProcess = cmdline.includes("pi") && ppidOfPpid !== "1";
-			} catch { /* best-effort */ }
-		} catch { /* best-effort */ }
-		// A2: Ignore SIGTERM from Pi infrastructure — Pi sends SIGTERM to cleanup
-		// children when tool call returns, but this is NOT a real error condition
-		// if the background runner is still doing useful work.
-		if (isPiProcess) {
-			const cwd = argValue("--cwd");
-			const runId = argValue("--run-id");
-			if (cwd && runId) {
-				const loaded = loadRunManifestById(cwd, runId);
-				if (loaded) appendEvent(loaded.manifest.eventsPath, { type: "async.sigterm_ignored", runId, message: `Background runner ignored SIGTERM from Pi infrastructure (${callerInfo}) — continuing work.`, data: { signal: "SIGTERM", pid: process.pid, ppid: process.ppid, callerInfo } });
-			}
-			return; // Don't exit — let the run complete
-		}
+			require("node:fs").appendFileSync(
+				manifest.stateRoot + '/exit-code.txt',
+				`${new Date().toISOString()} exit_code=${code} pid=${process.pid}\n`
+			);
+		} catch {}
+	});
+
+	process.on("SIGTERM", () => {
+		// BUG #17 FIX: Ignore SIGTERM.
+		// IMPORTANT: Perform real I/O here to flush io_uring state after EINTR.
+		// Without I/O, io_uring can enter corrupted state and cause silent crash.
 		const cwd = argValue("--cwd");
 		const runId = argValue("--run-id");
 		if (cwd && runId) {
-			const loaded = loadRunManifestById(cwd, runId);
-			if (loaded) appendEvent(loaded.manifest.eventsPath, { type: "async.failed", runId, message: `Background runner received SIGTERM from ${callerInfo} — exiting.`, data: { signal: "SIGTERM", pid: process.pid, ppid: process.ppid, callerInfo } });
+			try {
+				const loaded = loadRunManifestById(cwd, runId);
+				if (loaded) appendEvent(loaded.manifest.eventsPath, { type: "async.sigterm_ignored", runId, message: `SIGTERM ignored pid=${process.pid}`, data: { pid: process.pid, ppid: process.ppid } });
+			} catch { /* best-effort */ }
 		}
-		process.exit(143);
 	});
 	process.on("SIGINT", () => { signalLog("SIGINT"); process.exit(130); });
+	// BUG #17: Catch ALL signals to identify what kills the background runner
+	for (const sig of ["SIGHUP", "SIGUSR1", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGPROF", "SIGIO", "SIGPWR", "SIGSYS", "SIGURG", "SIGWINCH", "SIGCONT", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGVTALRM", "SIGXCPU", "SIGXFSZ"] as const) {
+		try {
+			process.on(sig, () => {
+				signalLog(sig);
+				try {
+					const loaded = loadRunManifestById(cwd!, runId!);
+					if (loaded) appendEvent(loaded.manifest.eventsPath, { type: "async.signal", runId: runId!, message: `Background runner received ${sig}`, data: { signal: sig, pid: process.pid } });
+				} catch { /* best-effort */ }
+			});
+		} catch { /* some signals not supported on this platform */ }
+	}
 	// Hook Node.js abort — if process.exit is called with code 1 (uncaught exception, assert failure)
 	// we log it before exiting so it appears in background.log
 	const origExit = process.exit.bind(process);
 	// Intercept all exit(code) calls to log them as async.exit events before exiting.
 	// This surfaces uncaught exceptions / early exits that would otherwise vanish silently.
 	process.exit = ((code?: number | string): never => {
-		if (code !== undefined) {
-			const cwd2 = argValue("--cwd");
-			const runId2 = argValue("--run-id");
-			if (cwd2 && runId2) {
-				try {
-					const loaded = loadRunManifestById(cwd2, runId2);
-					if (loaded) {
-						appendEvent(loaded.manifest.eventsPath, { type: "async.exit", runId: runId2, message: `Background runner exit(${code})`, data: { code, pid: process.pid } });
-					}
-				} catch { /* best-effort */ }
-			}
+		const cwd2 = argValue("--cwd");
+		const runId2 = argValue("--run-id");
+		const codeStr = code === undefined ? "<none>" : String(code);
+		if (cwd2 && runId2) {
+			try {
+				const loaded = loadRunManifestById(cwd2, runId2);
+				if (loaded) {
+					appendEvent(loaded.manifest.eventsPath, { type: "async.exit", runId: runId2, message: `Background runner exit(${codeStr}) pid=${process.pid}`, data: { code, pid: process.pid } });
+				}
+			} catch { /* best-effort */ }
 		}
 		return origExit(code);
 	}) as typeof process.exit;
@@ -198,9 +211,19 @@ async function main(): Promise<void> {
 	const runId = argValue("--run-id");
 	if (!cwd || !runId) throw new Error("Usage: background-runner.ts --cwd <cwd> --run-id <runId>");
 
+	// Log PGID and SID for debugging process group isolation
+	try {
+		const stat = fs.readFileSync("/proc/self/stat", "utf8").split(" ");
+		console.log(`[background-runner] DEBUG: pid=${process.pid} ppid=${process.ppid} pgid=${stat[4]} sid=${stat[5]} cwd=${cwd} runId=${runId}`);
+	} catch {
+		console.log(`[background-runner] DEBUG: pid=${process.pid} ppid=${process.ppid} cwd=${cwd} runId=${runId}`);
+	}
+
 	const loaded = loadRunManifestById(cwd, runId);
 	if (!loaded) throw new Error(`Run '${runId}' not found.`);
 	let { manifest, tasks } = loaded;
+
+	console.log(`[background-runner] DEBUG: manifest loaded, eventsPath=${manifest.eventsPath}`);
 
 	// Setup unhandled rejection guard EARLY — must be before any async operations
 	// that might produce unhandled rejections during cleanup.
@@ -208,18 +231,32 @@ async function main(): Promise<void> {
 	setupUnhandledRejectionGuard(rejectionGuardState);
 
 	appendEvent(manifest.eventsPath, { type: "async.started", runId: manifest.runId, data: { pid: process.pid } });
+	console.log(`[background-runner] DEBUG: async.started written, pid=${process.pid}`);
 	writeAsyncStartMarker(manifest, { pid: process.pid, startedAt: new Date().toISOString() });
 	const stopHeartbeat = startHeartbeat(manifest.stateRoot, manifest.eventsPath, manifest.runId);
 	const stopInterruptGuard = startInterruptGuard(manifest);
+	console.log(`[background-runner] DEBUG: heartbeat+interrupt guard started`);
+	// BUG #17: Keep-alive interval prevents event loop from exiting during
+	// jiti compilation. Pure empty interval (no I/O to avoid io_uring issues).
+	const keepAlive = setInterval(() => {}, 5000);
+
 
 	try {
+		console.log(`[background-runner] DEBUG: about to call discoverAgents`);
 		const agents = allAgents(discoverAgents(cwd));
+		console.log(`[background-runner] DEBUG: discoverAgents done, ${agents.length} agents`);
+		fs.fsyncSync(fs.openSync(manifest.eventsPath, "a")); // FORCE flush so we see this before death
+		console.log(`[background-runner] DEBUG: calling directTeamAndWorkflowFromRun`);
 		const direct = directTeamAndWorkflowFromRun(manifest, tasks, agents);
+		console.log(`[background-runner] DEBUG: direct done, finding team`);
 		const team = direct?.team ?? allTeams(discoverTeams(cwd)).find((candidate) => candidate.name === manifest.team);
 		if (!team) throw new Error(`Team '${manifest.team}' not found.`);
+		console.log(`[background-runner] DEBUG: team=${team.name}, finding workflow`);
 		const baseWorkflow = direct?.workflow ?? allWorkflows(discoverWorkflows(cwd)).find((candidate) => candidate.name === manifest.workflow);
 		if (!baseWorkflow) throw new Error(`Workflow '${manifest.workflow ?? ""}' not found.`);
+		console.log(`[background-runner] DEBUG: workflow=${baseWorkflow.name}`);
 		const workflow = expandParallelResearchWorkflow(baseWorkflow, cwd);
+		console.log(`[background-runner] DEBUG: loading config`);
 		const loadedConfig = loadConfig(cwd);
 		const runConfig = manifest.runConfig && typeof manifest.runConfig === "object" && !Array.isArray(manifest.runConfig) ? manifest.runConfig as typeof loadedConfig.config : loadedConfig.config;
 		const runtime = manifest.runtimeResolution ? { kind: manifest.runtimeResolution.kind, requestedMode: manifest.runtimeResolution.requestedMode, available: manifest.runtimeResolution.available, fallback: manifest.runtimeResolution.fallback, steer: manifest.runtimeResolution.kind === "live-session", resume: manifest.runtimeResolution.kind === "live-session", liveToolActivity: manifest.runtimeResolution.kind === "live-session", transcript: manifest.runtimeResolution.kind !== "scaffold", reason: manifest.runtimeResolution.reason, safety: manifest.runtimeResolution.safety } : await resolveCrewRuntime(runConfig);
@@ -229,14 +266,27 @@ async function main(): Promise<void> {
 		appendEvent(manifest.eventsPath, { type: "runtime.resolved", runId: manifest.runId, message: `Runtime resolved: ${runtime.kind} safety=${runtime.safety}`, data: { runtimeResolution, async: true } });
 		if (runtime.safety === "blocked") throw new Error(runtime.reason ?? "Child worker execution is disabled; refusing to create no-op scaffold subagents.");
 		const executeWorkers = runtime.kind !== "scaffold";
-		// Use ownerSessionId for workspaceId to ensure agents are only visible to the session that spawned them.
+	// Use ownerSessionId for workspaceId to ensure agents are only visible to the session that spawned them.
 		// manifest.cwd would cause cross-session visibility since all sessions share the same project directory.
 		// Mark this as background mode so task-runner writes events to background.log for debugging.
 		process.env.PI_CREW_BACKGROUND_MODE = "1";
-		const result = await executeTeamRun({ manifest, tasks, team, workflow, agents, executeWorkers, limits: runConfig.limits, runtime, runtimeConfig: runConfig.runtime, skillOverride: manifest.skillOverride, reliability: runConfig.reliability, workspaceId: manifest.ownerSessionId ?? manifest.cwd });
+		// BUG #17: Keep-alive interval (NOT unref'd) prevents event loop from exiting
+		// during jiti compilation of team-runner.ts. Without this, the event loop
+		// can drain when import() blocks, causing the process to exit prematurely.
+		console.log(`[background-runner] DEBUG: calling executeTeamRun`);
+		let result;
+		try {
+			result = await executeTeamRun({ manifest, tasks, team, workflow, agents, executeWorkers, limits: runConfig.limits, runtime, runtimeConfig: runConfig.runtime, skillOverride: manifest.skillOverride, reliability: runConfig.reliability, workspaceId: manifest.ownerSessionId ?? manifest.cwd });
+			console.log(`[background-runner] DEBUG: executeTeamRun returned, status=${result.manifest.status}`);
+		} catch (execError) {
+			console.log(`[background-runner] DEBUG: executeTeamRun THREW: ${execError instanceof Error ? execError.message : String(execError)}`);
+			console.log(`[background-runner] DEBUG: stack: ${execError instanceof Error ? execError.stack : "N/A"}`);
+			throw execError;
+		}
 		manifest = result.manifest;
 		tasks = result.tasks;
 		appendEvent(manifest.eventsPath, { type: "async.completed", runId: manifest.runId, data: { status: manifest.status, tasks: tasks.length } });
+		console.log(`[background-runner] DEBUG: async.completed written, status=${manifest.status}`);
 		if (manifest.status === "failed" || manifest.status === "cancelled" || manifest.status === "blocked") process.exitCode = 1;
 	} catch (error) {
 		// Terminate live agents on failure too — agents are done when the run fails
@@ -252,11 +302,17 @@ async function main(): Promise<void> {
 		manifest = updateRunStatus(manifest, "failed", message);
 		appendEvent(manifest.eventsPath, { type: "async.failed", runId: manifest.runId, message });
 		process.exitCode = 1;
+		console.log(`[background-runner] DEBUG: catch block, error=${error instanceof Error ? error.message : String(error)}`);
 	} finally {
+		console.log(`[background-runner] DEBUG: finally block, exitCode=${process.exitCode}`);
 		stopInterruptGuard();
 		stopParentGuard();
 		stopHeartbeat();
+		clearInterval(keepAlive);
 	}
 }
 
-await main();
+await main().catch((err) => {
+	console.error(`[background-runner] DEBUG: main() uncaught: ${err?.message ?? err}`);
+	process.exit(1);
+});

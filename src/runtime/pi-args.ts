@@ -99,8 +99,10 @@ export function buildPiWorkerArgs(input: BuildPiWorkerArgsInput): BuildPiWorkerA
 	}
 
 	if (input.agent.tools?.length) args.push("--tools", input.agent.tools.join(","));
+	// Always add --no-extensions before --extension to prevent user extensions from being auto-loaded.
+	// User extensions in ~/.pi/agent/extensions/ may fail due to missing dependencies.
+	args.push("--no-extensions");
 	if (input.agent.extensions !== undefined) {
-		args.push("--no-extensions");
 		for (const extension of [PROMPT_RUNTIME_EXTENSION_PATH, ...input.agent.extensions]) args.push("--extension", extension);
 	} else {
 		args.push("--extension", PROMPT_RUNTIME_EXTENSION_PATH);

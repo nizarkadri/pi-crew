@@ -132,7 +132,7 @@ export async function handleRun(params: TeamToolParamsValue, ctx: TeamContext): 
 	const executionManifest = { ...updatedManifest, runtimeResolution, runConfig: executedConfig, updatedAt: new Date().toISOString() };
 	atomicWriteJson(paths.manifestPath, executionManifest);
 	appendEvent(executionManifest.eventsPath, { type: "runtime.resolved", runId: executionManifest.runId, message: `Runtime resolved: ${runtime.kind} safety=${runtime.safety}`, data: { runtimeResolution } });
-	const runAsync = true; // TODO: restore async parameter when SIGTERM fix is verified
+	const runAsync = params.async ?? executedConfig.asyncByDefault ?? false;
 	let effectiveRuntime = runtime;
 	if (runAsync && runtime.kind === "live-session") {
 		effectiveRuntime = { ...runtime, kind: "child-process", steer: true, resume: false, liveToolActivity: false, fallback: "child-process", reason: "Background runner cannot use live-session; falling back to child-process." };
@@ -157,7 +157,7 @@ export async function handleRun(params: TeamToolParamsValue, ctx: TeamContext): 
 				`Env: PI_CREW_EXECUTE_WORKERS=${process.env.PI_CREW_EXECUTE_WORKERS ?? "<unset>"}, PI_TEAMS_EXECUTE_WORKERS=${process.env.PI_TEAMS_EXECUTE_WORKERS ?? "<unset>"}`,
 			].join("\n"), { action: "run", status: "error", runId: blocked.runId, artifactsRoot: blocked.artifactsRoot }, true);
 		}
-		const spawned = spawnBackgroundTeamRun(effectiveManifest);
+		const spawned = await spawnBackgroundTeamRun(effectiveManifest);
 		const asyncManifest = { ...effectiveManifest, async: { pid: spawned.pid, logPath: spawned.logPath, spawnedAt: new Date().toISOString() } };
 		atomicWriteJson(paths.manifestPath, asyncManifest);
 		appendEvent(effectiveManifest.eventsPath, { type: "async.spawned", runId: effectiveManifest.runId, data: { pid: spawned.pid, logPath: spawned.logPath } });

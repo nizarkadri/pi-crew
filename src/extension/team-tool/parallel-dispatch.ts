@@ -145,7 +145,7 @@ async function spawnSingleTask(
 		});
 
 		if (runtime.available && runtime.kind === "child-process") {
-			spawnBackgroundTeamRun(created.manifest);
+			await spawnBackgroundTeamRun(created.manifest);
 		}
 
 		return { ok: true, value: { runId: created.manifest.runId, goal, agent: agentName } };

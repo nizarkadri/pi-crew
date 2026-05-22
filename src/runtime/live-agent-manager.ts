@@ -200,7 +200,7 @@ export function evictStaleLiveAgentHandles(now = Date.now()): number {
 }
 
 export function listLiveAgents(): LiveAgentHandle[] {
-	return [...liveAgents.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+	return [...liveAgents.values()].sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
 }
 
 export function listActiveLiveAgents(): LiveAgentHandle[] {

@@ -9,7 +9,7 @@ npm: pi-crew
 repo: https://github.com/baphuongna/pi-crew
 ```
 
-**v0.2.20**: 14 bugs fixed — needs_attention terminal status, heartbeat-based stale detection, 3-layer OOM protection for background runs, model API key preservation. See [CHANGELOG.md](CHANGELOG.md) and [docs/pi-crew-bugs.md](docs/pi-crew-bugs.md).
+**v0.2.21**: 3 bugs fixed — background runner session_shutdown survival, child-pi stdin hang, phantom runs from temp workspaces. See [CHANGELOG.md](CHANGELOG.md) and [docs/pi-crew-bugs.md](docs/pi-crew-bugs.md).
 
 ---
 

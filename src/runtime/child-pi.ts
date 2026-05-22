@@ -196,10 +196,11 @@ export function buildChildPiSpawnOptions(cwd: string, env: NodeJS.ProcessEnv): S
 	return {
 		cwd,
 		env: { ...filteredEnv, PI_CREW_PARENT_PID: String(process.pid) },
-		stdio: ["pipe", "pipe", "pipe"],
+		stdio: ["ignore", "pipe", "pipe"], // stdin=ignore: child doesn't wait for input; task comes via CLI args
 		detached: process.platform !== "win32",
+		setsid: true,
 		windowsHide: true,
-	};
+	} as SpawnOptions;
 }
 
 function appendTranscript(input: ChildPiRunInput, line: string): void {
@@ -370,7 +371,7 @@ export async function runChildPi(input: ChildPiRunInput): Promise<ChildPiRunResu
 		if (mock === "retryable-failure") return { exitCode: 1, stdout: "", stderr: "rate limit: mock failure" };
 		return { exitCode: 1, stdout: "", stderr: `mock failure: ${mock}` };
 	}
-	const built = buildPiWorkerArgs({ task: input.task, agent: input.agent, model: input.model, sessionEnabled: false, maxDepth: input.maxDepth, skillPaths: input.skillPaths });
+	const built = buildPiWorkerArgs({ task: input.task, agent: input.agent, model: input.model, sessionEnabled: true, maxDepth: input.maxDepth, skillPaths: input.skillPaths });
 	const spawnSpec = getPiSpawnCommand(built.args);
 	try {
 		return await new Promise<ChildPiRunResult>((resolve) => {

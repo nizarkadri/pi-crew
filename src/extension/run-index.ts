@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { TeamRunManifest } from "../state/types.ts";
 import { DEFAULT_PATHS } from "../config/defaults.ts";
@@ -22,11 +23,16 @@ function collectRuns(root: string, maxEntries?: number, signal?: AbortSignal): T
 	const runsRoot = path.join(root, DEFAULT_PATHS.state.runsSubdir);
 	if (!fs.existsSync(runsRoot)) return [];
 	if (signal?.aborted) return [];
+	// 2.19 — skip temp directories to avoid phantom runs from test/isolated workspaces.
+	// Runs in /tmp/ are typically from tests or isolated worktrees and should not
+	// appear in production dashboards unless the process is actually alive.
+	const tempDirs = [os.tmpdir(), "/var/tmp", "/tmp"];
+	const isTempRoot = tempDirs.some((t) => root.startsWith(t + path.sep));
 	const token = createCancellationToken({ signal });
 	const entries = fs.readdirSync(runsRoot, { withFileTypes: true })
 		.filter((entry) => entry.isDirectory() && isSafePathId(entry.name))
 		.map((entry) => entry.name)
-		.sort((a, b) => b.localeCompare(a));
+		.sort((a, b) => (b ?? "").localeCompare(a ?? ""));
 	const selected = maxEntries !== undefined ? entries.slice(0, Math.max(0, maxEntries)) : entries;
 	const results: TeamRunManifest[] = [];
 	for (let i = 0; i < selected.length; i++) {
@@ -37,6 +43,18 @@ function collectRuns(root: string, maxEntries?: number, signal?: AbortSignal): T
 			// Filter out ghost runs: active status but CWD no longer exists.
 			// These are deadletter/replay/temp runs whose temp dirs were cleaned up.
 			if ((manifest.status === "queued" || manifest.status === "running" || manifest.status === "planning") && manifest.cwd && !fs.existsSync(manifest.cwd)) continue;
+			// 2.19 — for runs in temp directories, verify the background process is alive.
+			// Without this, runs that completed/crashed but left stale manifests will still show.
+			if (isTempRoot && (manifest.status === "running" || manifest.status === "queued" || manifest.status === "planning")) {
+				const asyncPidPath = path.join(path.dirname(manifest.stateRoot), "async.pid");
+				try {
+					const pidData = JSON.parse(fs.readFileSync(asyncPidPath, "utf-8"));
+					const pid = pidData?.pid;
+					if (pid && typeof pid === "number") {
+						try { process.kill(pid, 0); } catch { continue; } // PID dead, skip this run
+					}
+				} catch { /* no async.pid or parse error — keep the run */ }
+			}
 			results.push(manifest);
 		} catch { /* skip unreadable manifests */ }
 	}
@@ -46,7 +64,7 @@ function collectRuns(root: string, maxEntries?: number, signal?: AbortSignal): T
 function mergeRuns(runSets: TeamRunManifest[][], max?: number): TeamRunManifest[] {
 	const byId = new Map<string, TeamRunManifest>();
 	for (const runs of runSets) for (const run of runs) byId.set(run.runId, run);
-	const sorted = [...byId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+	const sorted = [...byId.values()].sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
 	return max !== undefined ? sorted.slice(0, Math.max(0, max)) : sorted;
 }
 

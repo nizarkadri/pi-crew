@@ -50,7 +50,7 @@ function appendPruneAudit(cwd: string, payload: Record<string, unknown>): string
 
 export function pruneFinishedRuns(cwd: string, keep: number, options: PruneRunsOptions = {}): PruneRunsResult {
 	const token = createCancellationToken({ signal: options.signal });
-	const finished = listRuns(cwd, options.signal).filter((run) => run.cwd === cwd && isFinished(run)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+	const finished = listRuns(cwd, options.signal).filter((run) => run.cwd === cwd && isFinished(run)).sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
 	const kept = finished.slice(0, keep).map((run) => run.runId);
 	const removed: string[] = [];
 	const toRemove = finished.slice(keep);
@@ -129,7 +129,7 @@ export function pruneUserLevelRuns(keep: number): PruneRunsResult {
 	}
 
 	// Sort newest first, keep top N, remove the rest
-	finished.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+	finished.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
 	const kept = finished.slice(0, keep).map((r) => r.runId);
 	const removed: string[] = [];
 	for (const run of finished.slice(keep)) {

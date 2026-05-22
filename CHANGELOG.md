@@ -1,8 +1,10 @@
 # Changelog
 
 ## [Unreleased]
-
-_(Nothing yet — see 0.2.20 for recent changes)_
+### Bug Fixes
+- **Bug #17: Background runner dies at ~35s on session_shutdown** — `cleanupRuntime()` in `register.ts` was killing ALL async runners on every `session_shutdown` event (which fires every 30-35s on fork/resume). Fixed by commenting out the killAsync loop. Background runners now correctly outlive the parent Pi session.
+- **Bug #18: Child-pi workers hang on stdin with setsid+detached** — When `stdio: ["pipe", "pipe", "pipe"]` combined with `setsid: true` + `detached: true`, the stdin pipe enters a blocking state even though task data is passed via CLI args. Fixed by changing to `stdio: ["ignore", "pipe", "pipe"]` in `child-pi.ts` line 199.
+- **Bug #19: Phantom runs from temp workspaces** — Runs in `/tmp/pi-crew-*/` directories were appearing in dashboard as "running" even after processes died. Root cause: test runs create temp workspaces with `status=running` but no `async.pid` (live-session/scaffold runs). Fixed by adding PID alive check in `run-index.ts` and 30-minute timeout for non-async runs in `active-run-registry.ts`.
 
 ## 0.2.20 — 14 Bugs Fixed — needs_attention, Heartbeat, OOM, API Keys (2026-05-20)
 
