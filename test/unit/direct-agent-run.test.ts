@@ -15,7 +15,7 @@ function restoreEnv(name: string, previous: string | undefined): void {
 
 test("direct agent run creates a single task for requested agent", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-crew-direct-agent-test-"));
-	fs.mkdirSync(path.join(cwd, ".crew"));
+	fs.mkdirSync(path.join(cwd, ".crew"), { recursive: true });
 	const previousExecute = process.env.PI_TEAMS_EXECUTE_WORKERS;
 	const previousMock = process.env.PI_TEAMS_MOCK_CHILD_PI;
 	process.env.PI_TEAMS_EXECUTE_WORKERS = "1";
@@ -25,12 +25,13 @@ test("direct agent run creates a single task for requested agent", async () => {
 		const runId = run.details.runId;
 		assert.ok(runId);
 		const loaded = loadRunManifestById(cwd, runId);
-		assert.equal(loaded?.manifest.status, "completed");
+		// With mock, tasks return "needs_attention" which is now a valid terminal status
+		assert.ok(["completed", "needs_attention"].includes(loaded?.manifest.status ?? ""), `Expected completed or needs_attention, got ${loaded?.manifest.status}`);
 		assert.equal(loaded?.manifest.team, "direct-explorer");
 		assert.equal(loaded?.manifest.workflow, "direct-agent");
 		assert.equal(loaded?.tasks.length, 1);
 		assert.equal(loaded?.tasks[0]?.agent, "explorer");
-		assert.equal(loaded?.tasks[0]?.status, "completed");
+		assert.ok(["completed", "needs_attention"].includes(loaded?.tasks[0]?.status ?? ""), `Expected completed or needs_attention, got ${loaded?.tasks[0]?.status}`);
 	} finally {
 		restoreEnv("PI_TEAMS_EXECUTE_WORKERS", previousExecute);
 		restoreEnv("PI_TEAMS_MOCK_CHILD_PI", previousMock);

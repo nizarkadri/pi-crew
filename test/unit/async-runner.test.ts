@@ -8,9 +8,12 @@ import type { TeamRunManifest } from "../../src/state/types.ts";
 test("background runner uses the jiti runtime loader for installed TypeScript", () => {
 	const command = getBackgroundRunnerCommand("/tmp/node_modules/pi-crew/src/runtime/background-runner.ts", "/tmp/project", "run_123", "/tmp/node_modules/pi-crew/node_modules/jiti/lib/jiti-register.mjs");
 	assert.equal(command.loader, "jiti");
-	assert.equal(command.args[0], "--import");
-	assert.match(command.args[1] ?? "", /jiti-register\.mjs$/);
-	assert.equal(command.args[2], "/tmp/node_modules/pi-crew/src/runtime/background-runner.ts");
+	// Memory limit is prepended first
+	assert.equal(command.args[0], "--max-old-space-size=512");
+	assert.equal(command.args[1], "--trace-uncaught");
+	assert.equal(command.args[2], "--import");
+	assert.match(command.args[3] ?? "", /jiti-register\.mjs$/);
+	assert.equal(command.args[4], "/tmp/node_modules/pi-crew/src/runtime/background-runner.ts");
 	assert.deepEqual(command.args.slice(-4), ["--cwd", "/tmp/project", "--run-id", "run_123"]);
 });
 
@@ -72,8 +75,9 @@ test("resolveTypeScriptLoader returns undefined when jiti missing and Node < 22.
 test("getBackgroundRunnerCommand emits --experimental-strip-types args for strip-types loader", () => {
 	const command = getBackgroundRunnerCommand("/tmp/runner.ts", "/tmp/project", "run_123", { kind: "strip-types" });
 	assert.equal(command.loader, "strip-types");
-	assert.equal(command.args[0], "--experimental-strip-types");
-	assert.equal(command.args[1], "/tmp/runner.ts");
+	assert.equal(command.args[0], "--max-old-space-size=512");
+	assert.equal(command.args[1], "--experimental-strip-types");
+	assert.equal(command.args[2], "/tmp/runner.ts");
 	assert.deepEqual(command.args.slice(-4), ["--cwd", "/tmp/project", "--run-id", "run_123"]);
 });
 
@@ -81,5 +85,6 @@ test("getBackgroundRunnerCommand accepts loader-spec input directly", () => {
 	const jitiPath = "/tmp/x/node_modules/jiti/lib/jiti-register.mjs";
 	const command = getBackgroundRunnerCommand("/tmp/runner.ts", "/tmp/project", "run_123", { kind: "jiti", path: jitiPath });
 	assert.equal(command.loader, "jiti");
-	assert.match(command.args[1] ?? "", /jiti-register\.mjs$/);
+	assert.equal(command.args[0], "--max-old-space-size=512");
+	assert.match(command.args[3] ?? "", /jiti-register\.mjs$/);
 });
