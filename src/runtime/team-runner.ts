@@ -408,7 +408,7 @@ async function executeTeamRunCore(
 		// DAG-based execution plan: when tasks have explicit dependsOn, use the
 		// topological wave planner to determine ready tasks. Fall back to the
 		// existing task-graph-scheduler when no explicit deps exist (backward compat).
-		const completedIds = new Set(tasks.filter((t) => t.status === "completed").map((t) => t.id));
+		const completedIds = new Set(tasks.filter((t) => t.status === "completed" || t.status === "needs_attention").map((t) => t.id));
 		const dagReady = dagReadyTaskIds(tasks, completedIds);
 		const effectiveReady = dagReady ?? snapshot.ready;
 
@@ -419,7 +419,7 @@ async function executeTeamRunCore(
 			const wfContext: PhaseGuardContext = {
 				completedArtifacts,
 				previousPhaseStatus,
-				taskResults: tasks.filter((t) => t.status === "completed").map((t) => ({ taskId: t.id, status: t.status, outputPath: t.resultArtifact?.path })),
+				taskResults: tasks.filter((t) => t.status === "completed" || t.status === "needs_attention").map((t) => ({ taskId: t.id, status: t.status, outputPath: t.resultArtifact?.path })),
 			};
 			const preconditions = validatePhasePreconditions(wfMachine, wfContext);
 			if (!preconditions.ready) {
@@ -571,7 +571,7 @@ async function executeTeamRunCore(
 				const wfContext: PhaseGuardContext = {
 					completedArtifacts,
 					previousPhaseStatus,
-					taskResults: tasks.filter((t) => t.status === "completed").map((t) => ({ taskId: t.id, status: t.status, outputPath: t.resultArtifact?.path })),
+					taskResults: tasks.filter((t) => t.status === "completed" || t.status === "needs_attention").map((t) => ({ taskId: t.id, status: t.status, outputPath: t.resultArtifact?.path })),
 				};
 				// Determine phase transition status based on individual task outcomes
 				const phaseTasks = phaseTaskIds.map((taskId) => tasks.find((t) => t.id === taskId)).filter((t): t is NonNullable<typeof t> => t !== undefined);
