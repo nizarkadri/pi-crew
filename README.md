@@ -9,7 +9,7 @@ npm: pi-crew
 repo: https://github.com/baphuongna/pi-crew
 ```
 
-**v0.2.21**: 3 bugs fixed — background runner session_shutdown survival, child-pi stdin hang, phantom runs from temp workspaces. See [CHANGELOG.md](CHANGELOG.md) and [docs/pi-crew-bugs.md](docs/pi-crew-bugs.md).
+**v0.2.25**: See [CHANGELOG.md](CHANGELOG.md) and [docs/pi-crew-bugs.md](docs/pi-crew-bugs.md).
 
 ---
 
@@ -116,32 +116,60 @@ security-reviewer  ·  test-engineer  ·  verifier  ·  writer
 
 ---
 
-## Runtime Safety
+## Runtime Modes
 
-By default, `run` launches each task as a **separate child Pi process**. Workers execute independently and stream output to durable state.
+pi-crew supports multiple runtime modes for task execution:
 
-Scaffold/dry-run mode (no real workers):
+| Mode | Description |
+|------|-------------|
+| `auto` (default) | Uses `child-process` unless overridden by config |
+| `child-process` | Spawns real `pi` child processes — each task runs in isolation |
+| `scaffold` | Dry-run mode — renders prompts and persists artifacts without executing |
+| `live-session` (experimental) | In-process session execution within the parent Pi |
 
 ```json
-{ "runtime": { "mode": "scaffold" } }
-```
+// Use scaffold mode (no real workers, just prompts)
+{ "action": "run", "team": "default", "goal": "...", "runtime": { "mode": "scaffold" } }
 
-Disable workers globally:
-
-```json
+// Disable workers globally
 { "executeWorkers": false }
 ```
 
-Worktree mode is **opt-in** and requires a clean repo:
+## Async Runs
+
+Async runs are **detached** from the session — they survive session switches and reloads. Pi-crew notifies when complete.
+
+```json
+{ "action": "run", "team": "default", "goal": "...", "async": true }
+```
+
+```text
+/team-run --async Investigate failing tests
+```
+
+Background runs use `node --import jiti-register.mjs` for TypeScript support. See [docs/runtime-flow.md](docs/runtime-flow.md) for details.
+
+## Worktree Isolation
+
+Worktree mode creates an **isolated git worktree per task** — safe for parallel edits to the same branch.
 
 ```json
 {
   "action": "run",
   "team": "implementation",
   "goal": "Refactor auth",
-  "workspaceMode": "worktree"
+  "worktree": { "enabled": true }
 }
 ```
+
+```text
+/team-run --worktree Refactor auth
+```
+
+Requirements:
+- Git repository
+- Clean working tree (no uncommitted changes in the main worktree)
+- Worktrees auto-cleanup on run completion/cancel
 
 ---
 
@@ -158,45 +186,85 @@ Worktree mode is **opt-in** and requires a clean repo:
 ### Quick Config
 
 ```text
-/team-config                                       # view
-/team-config asyncByDefault=true                    # update
-/team-config runtime.mode=scaffold                  # scaffold mode
-/team-config --unset=asyncByDefault                 # reset
-/team-config autonomous.profile=assisted --project  # project scope
+/team-config                           # view all settings
+/team-config get runtime.mode            # read one key
+/team-config set runtime.mode=scaffold  # scaffold mode
+/team-config set asyncByDefault=true    # async by default
+/team-config unset runtime.mode          # reset to default
+/team-config --project                  # project scope
+/team-settings path                     # show config file path
 ```
 
 ### Key Settings
 
-| Section | Key Settings | Default |
-|---------|-------------|---------|
-| **Runtime** | `mode`: `auto` \| `scaffold` \| `child-process` \| `live-session` | `auto` |
-| **Concurrency** | `limits.maxConcurrentWorkers` | workflow-dependent (2–4) |
-| **Async** | `asyncByDefault`, `runtime.groupJoin` | `false`, `smart` |
+| Section | Keys | Default |
+|---------|------|---------|
+| **Runtime** | `mode`: `auto` \| `child-process` \| `scaffold` \| `live-session` | `auto` |
+| | `maxTurns`, `graceTurns`, `groupJoin`, `requirePlanApproval` | various |
+| **Concurrency** | `limits.maxConcurrentWorkers` | workflow-dependent |
+| | `limits.maxTaskDepth`, `limits.maxChildrenPerTask` | 2, 5 |
+| **Async** | `asyncByDefault` | `false` |
+| | `runtime.groupJoin`: `off` \| `group` \| `smart` | `smart` |
 | **Autonomy** | `profile`: `manual` \| `suggested` \| `assisted` \| `aggressive` | `suggested` |
-| **UI** | `widgetPlacement`, `dashboardPlacement`, `showModel`, `showTokens` | compact widget |
-| **Reliability** | `autoRetry`, `autoRecover`, `deadletterThreshold`, `retryPolicy` | all opt-in |
-| **Observability** | `prometheus.enabled`, `otlp.enabled` | opt-in |
+| | `autonomous.injectPolicy`, `preferAsyncForLongTasks` | true, false |
+| **UI** | `widgetPlacement`, `dashboardPlacement` | compact widget |
+| | `showModel`, `showTokens` | display controls |
+| **Reliability** | `autoRetry`, `autoRecover`, `deadletterThreshold` | opt-in |
+| **Observability** | `prometheus.enabled`, `otlp.enabled`, `heartbeatStaleMs` | opt-in |
+| **Worktree** | `worktree.enabled` | disabled by default |
 
 > ⚠️ **Trust boundary**: project config cannot override sensitive execution controls (workers, runtime mode, autonomy, agent overrides). Set those in **user config** only.
 
-📖 Full config reference: [docs/configuration.md](docs/configuration.md) *(coming soon — see [docs/usage.md](docs/usage.md) for now)*
+📖 Full config reference: [docs/commands-reference.md#team-settings--config-management](docs/commands-reference.md) and [schema.json](schema.json)
 
 ---
 
 ## Tool Actions
 
 ```json
-{ "action": "run", "team": "default", "goal": "..." }       // execute
-{ "action": "status", "runId": "team_..." }                   // monitor
-{ "action": "cancel", "runId": "team_..." }                   // stop
-{ "action": "resume", "runId": "team_..." }                   // continue
-{ "action": "recommend", "goal": "..." }                       // get advice
-{ "action": "list" }                                            // discover
-{ "action": "create", "resource": "agent", ... }              // extend
-{ "action": "doctor" }                                          // diagnose
+// Execute workflow (foreground or async)
+{ "action": "run", "team": "default", "goal": "..." }
+{ "action": "run", "team": "default", "goal": "...", "async": true }
+
+// Monitor & control
+{ "action": "status", "runId": "team_..." }
+{ "action": "summary", "runId": "team_..." }
+{ "action": "events", "runId": "team_..." }
+{ "action": "artifacts", "runId": "team_..." }
+{ "action": "cancel", "runId": "team_..." }
+{ "action": "resume", "runId": "team_..." }
+
+// Discovery
+{ "action": "list" }
+{ "action": "get", "resource": "team", "name": "default" }
+{ "action": "recommend", "goal": "Refactor auth flow" }
+
+// Resource management
+{ "action": "create", "resource": "agent", "config": { "name": "api-reviewer", ... } }
+{ "action": "update", "resource": "team", "name": "backend", "config": { ... } }
+{ "action": "delete", "resource": "workflow", "name": "quick-review" }
+{ "action": "validate" }
+
+// Run maintenance
+{ "action": "cleanup", "runId": "team_..." }
+{ "action": "forget", "runId": "team_...", "confirm": true }
+{ "action": "prune", "olderThanDays": 7, "confirm": true }
+{ "action": "export", "runId": "team_..." }
+{ "action": "import", "path": "/path/to/bundle.tar.gz" }
+
+// Environment & configuration
+{ "action": "doctor", "config": { "smokeChildPi": true } }
+{ "action": "config" }
+{ "action": "init", "config": { "copyBuiltins": true } }
+{ "action": "autonomy", "profile": "assisted" }
+
+// Advanced
+{ "action": "api", "runId": "team_...", "operation": "read-manifest" }
+{ "action": "plan", "team": "default", "goal": "..." }
+{ "action": "worktrees", "runId": "team_..." }
 ```
 
-📖 Full actions reference: [docs/actions-reference.md](docs/actions-reference.md)
+📖 Full actions reference (28 actions): [docs/actions-reference.md](docs/actions-reference.md)
 
 ---
 

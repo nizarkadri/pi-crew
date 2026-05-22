@@ -16,20 +16,20 @@ Maps pi-crew behavior to proof. Every row must have real validation evidence.
 
 | Story | Contract | Unit | Integration | CI | Status | Evidence |
 |-------|----------|------|-------------|-----|--------|----------|
-| Core team run | `docs/product/team-run.md` | yes | yes | yes 3/3 | implemented | 1621 tests pass |
-| Child process runner | `docs/product/child-process.md` | yes | no | yes 3/3 | implemented | child-pi.ts tests |
-| Async runner | `docs/product/async-runner.md` | yes | no | yes 3/3 | implemented | async-runner tests |
-| Live session | `docs/product/live-session.md` | yes | no | yes 3/3 | implemented | live-session tests |
-| State durability | `docs/product/state.md` | yes | no | yes 3/3 | implemented | state-store tests |
-| Worktree isolation | `docs/product/worktree.md` | yes | no | yes 3/3 | implemented | worktree tests |
-| Team tool API | `docs/product/team-tool.md` | yes | no | yes 3/3 | implemented | api tests |
-| Group join | `docs/product/group-join.md` | yes | no | yes 3/3 | implemented | group-join tests |
-| Model fallback | `docs/product/model-fallback.md` | yes | no | yes 3/3 | implemented | model-fallback tests |
-| Conflict detection | `docs/product/conflict-detect.md` | yes | no | yes 3/3 | implemented | conflict-detect tests |
-| Crash recovery | `docs/product/crash-recovery.md` | yes | no | yes 3/3 | implemented | crash-recovery tests |
-| Effectiveness guard | `docs/product/effectiveness.md` | yes | no | yes 3/3 | implemented | effectiveness tests |
-| Windows EBUSY | `docs/product/platform.md` | yes | no | yes 3/3 | implemented | rmSyncRetry tests |
-| Depth guard | `docs/product/runtime-safety.md` | yes | no | yes 3/3 | implemented | depth-guard tests |
+| Core team run | `docs/product/team-run.md` | yes | yes | yes 3/3 | implemented | 1655 tests pass (268 unit + 14 integration files) |
+| Child process runner | `docs/product/child-process.md` | yes | yes | yes 3/3 | implemented | child-pi-pool.test.ts, child-pi-timeout.test.ts, mock-child-run.test.ts |
+| Async runner | `docs/product/async-runner.md` | yes | yes | yes 3/3 | implemented | async-runner.test.ts, async-restart-recovery.test.ts |
+| Live session | `docs/product/live-session.md` | yes | no | yes 3/3 | implemented | live-session-context.test.ts, live-session-runtime.test.ts |
+| State durability | `docs/product/state.md` | yes | yes | yes 3/3 | implemented | state-store.test.ts, state-contracts.test.ts, phase3-runtime.test.ts |
+| Worktree isolation | `docs/product/worktree.md` | yes | yes | yes 3/3 | implemented | worktree-manager.test.ts, worktree-run.test.ts |
+| Team tool API | `docs/product/team-tool.md` | yes | yes | yes 3/3 | implemented | team-tool-dispatch.test.ts, extension-api-surface.test.ts, operator-experience.test.ts |
+| Group join | `docs/product/group-join.md` | yes | yes | yes 3/3 | implemented | phase6-runtime-hardening.test.ts |
+| Model fallback | `docs/product/model-fallback.md` | yes | no | yes 3/3 | implemented | model-fallback.test.ts |
+| Conflict detection | `docs/product/conflict-detect.md` | yes | no | yes 3/3 | implemented | conflict-detect.test.ts, delta-conflict.test.ts |
+| Crash recovery | `docs/product/crash-recovery.md` | yes | yes | yes 3/3 | implemented | recovery-recipes.test.ts, async-restart-recovery.test.ts |
+| Effectiveness guard | `docs/product/effectiveness.md` | yes | no | yes 3/3 | implemented | effectiveness-guard.test.ts |
+| Windows EBUSY | `docs/product/platform.md` | yes | yes | yes 3/3 | implemented | phase6-runtime-hardening.test.ts |
+| Depth guard | `docs/product/runtime-safety.md` | yes | no | yes 3/3 | implemented | subagent-depth.test.ts, completion-guard.test.ts |
 
 ## Evidence Rules
 
@@ -42,8 +42,10 @@ Maps pi-crew behavior to proof. Every row must have real validation evidence.
 ## Validation Commands
 
 ```bash
-npm test                    # Run all unit tests (1600+)
+npm test                    # Run all unit tests (1655 tests across 268 unit files + 14 integration files)
 npm run typecheck           # TypeScript check + strip-types import
 npm run check               # Biome lint + format
+npm run test:unit           # Unit tests only (fast, parallel)
+npm run test:integration    # Integration tests only (sequential)
 gh run list --limit 1       # Check latest CI status
 ```
