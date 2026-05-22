@@ -456,6 +456,7 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 				if (manifest) void import("../state/event-log.ts").then(({ appendEventFireAndForget }) => appendEventFireAndForget(manifest.eventsPath, event as Parameters<typeof appendEventFireAndForget>[1]));
 			},
 			waitForAll: async (runId) => {
+				// LAZY: loadRunManifestById is already imported at top of file, but kept here for consistency
 				const { loadRunManifestById } = await import("../state/state-store.ts");
 				const check = (): boolean => {
 					const loaded = loadRunManifestById(currentCtx?.cwd ?? process.cwd(), runId);

@@ -498,6 +498,7 @@ export function registerTeamCommands(pi: ExtensionAPI, deps: RegisterTeamCommand
 	} });
 
 	pi.registerCommand("skill-create", { description: "Create a skill from a builtin template: <template-id> [--var key=value...] [--project]", handler: async (args: string, ctx: ExtensionCommandContext) => {
+		// LAZY: load withSessionId only when needed for skill-create command
 		const { withSessionId } = await import("../team-tool/context.ts");
 		const sessionId = withSessionId(ctx);
 		const cwd = (ctx as unknown as { workspaceFolder?: { uri: { fsPath: string } } }).workspaceFolder?.uri?.fsPath ?? process.cwd();
