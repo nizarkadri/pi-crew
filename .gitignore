@@ -19,3 +19,5 @@ dist/
 artifacts/
 state/
 vscode-extension/
+.crew/worktrees/
+.crew/worktrees/
