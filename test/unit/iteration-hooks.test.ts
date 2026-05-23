@@ -45,11 +45,7 @@ describe("isAllowedHookPath", () => {
 		assert.equal(isAllowedHookPath("hooks/hook.sh"), false);
 	});
 	it("accepts relative paths starting with .hooks/", () => {
-		// Log intermediate values for debugging on Windows
-		const norm = path.normalize(".hooks/hook.sh");
-		const starts = norm.startsWith(".hooks/");
-		process.stderr.write("TEST_DBG:" + JSON.stringify({hookPath:".hooks/hook.sh", norm, starts}) + "\n");
-		assert.equal(starts, true, "path.normalize('.hooks/hook.sh').startsWith('.hooks/') should be true");
+		// Use path.posix.normalize for consistent forward-slash handling on all platforms.
 		assert.equal(isAllowedHookPath(".hooks/hook.sh"), true);
 		assert.equal(isAllowedHookPath(".hooks/my-hook.sh"), true);
 	});

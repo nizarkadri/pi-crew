@@ -69,7 +69,10 @@ const HOOK_TIMEOUT_MS = 30_000;
 export function isAllowedHookPath(hookPath: string): boolean {
 	if (!hookPath || hookPath.trim().length === 0) return false;
 	if (!path.isAbsolute(hookPath)) {
-		const normalized = path.normalize(hookPath);
+		// Use path.posix.normalize to ensure forward-slash normalization on all platforms.
+		// On Windows, path.normalize converts .hooks/hook.sh to .hooks\hook.sh (backslash),
+		// breaking the startsWith(".hooks/") check. path.posix.normalize always uses /.
+		const normalized = path.posix.normalize(hookPath);
 		return normalized === ".hooks" || normalized.startsWith(".hooks/");
 	}
 	// Normalize to forward slashes for consistent cross-platform comparison.
