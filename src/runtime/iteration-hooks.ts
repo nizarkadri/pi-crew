@@ -72,8 +72,12 @@ export function isAllowedHookPath(hookPath: string): boolean {
 		const normalized = path.normalize(hookPath);
 		return normalized === ".hooks" || normalized.startsWith(".hooks/");
 	}
-	const homeHooks = path.join(process.env.HOME ?? "", "", ".pi", "hooks");
-	return hookPath === homeHooks || hookPath.startsWith(homeHooks + path.sep);
+	// Normalize to forward slashes for consistent cross-platform comparison.
+	// e.g., "C:\\Users\\runner\\.pi\\hooks\\hook.sh" matches
+	// "C:\\Users\\runner\\.pi\\hooks/hook.sh" from path.join.
+	const normalizedHookPath = hookPath.replace(/\\/g, "/");
+	const homeHooksNormalized = (process.env.HOME ?? "").replace(/\\/g, "/") + "/.pi/hooks";
+	return normalizedHookPath === homeHooksNormalized || normalizedHookPath.startsWith(homeHooksNormalized + "/");
 }
 
 /**

@@ -52,8 +52,12 @@ describe("isAllowedHookPath", () => {
 		assert.equal(isAllowedHookPath(".hooks"), true);
 	});
 	it("accepts absolute paths under ~/.pi/hooks/", () => {
-		const homeHooks = path.join(process.env.HOME ?? "", ".pi", "hooks");
+		// Normalize to forward slashes to avoid cross-platform path.sep issues.
+		// Both path.join and path.isAbsolute use forward slashes on all platforms
+		// when the input already contains forward slashes.
+		const homeHooks = (process.env.HOME ?? "").replace(/\\/g, "/") + "/.pi/hooks";
 		assert.equal(isAllowedHookPath(homeHooks + "/hook.sh"), true);
+		assert.equal(isAllowedHookPath(homeHooks), true);
 	});
 });
 
