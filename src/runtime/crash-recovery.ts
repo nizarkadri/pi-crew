@@ -281,6 +281,36 @@ export function purgeStaleActiveRunIndex(staleThresholdMs = 300_000, now = Date.
 			}
 		}
 
+		// 6. "running" but no async worker PID — possible orphaned run where manifest
+		// was never updated after worker exit. Check updatedAt age.
+		if (manifest?.status === "running" && manifest.async === undefined) {
+			const updatedAt = new Date(entry.updatedAt).getTime();
+			if (Number.isFinite(updatedAt) && now - updatedAt > staleThresholdMs) {
+				try {
+					const fullLoaded = loadRunManifestById(entry.cwd, entry.runId);
+					if (fullLoaded && fullLoaded.manifest.status === "running") {
+						const now_iso = new Date(now).toISOString();
+						const repairedTasks = fullLoaded.tasks.map((task) => {
+							if (task.status === "running" || task.status === "queued" || task.status === "waiting") {
+								return { ...task, status: "cancelled" as const, finishedAt: now_iso, error: "Orphaned run: workflow completed but manifest never updated to terminal status" };
+							}
+							return task;
+						});
+						saveRunTasks(fullLoaded.manifest, repairedTasks);
+						for (const task of repairedTasks) { try { upsertCrewAgent(fullLoaded.manifest, recordFromTask(fullLoaded.manifest, task, "scaffold")); } catch { /* non-critical */ } }
+						updateRunStatus(fullLoaded.manifest, "cancelled", "Orphaned run: no async worker and no manifest update in over " + Math.round(staleThresholdMs / 60000) + " minutes");
+						void terminateLiveAgentsForRun(fullLoaded.manifest.runId, "cancelled", appendEvent, fullLoaded.manifest.eventsPath).catch(() => {});
+					}
+				} catch {
+					// Best-effort
+				}
+				unregisterActiveRun(entry.runId);
+				tryRemoveRunDirectories(entry);
+				purged.push(entry.runId);
+				continue;
+			}
+		}
+
 		kept.push(entry.runId);
 	}
 
