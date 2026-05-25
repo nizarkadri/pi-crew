@@ -51,6 +51,11 @@ function isWithinAllowedPrefixes(resolvedPath: string): boolean {
 		allowedPrefixes.push(homeLocal.toLowerCase());
 	} catch { /* ignore */ }
 
+	// nvm bin directory
+	try {
+		const nvmBin = path.join(os.homedir(), ".nvm", "versions");
+		allowedPrefixes.push(nvmBin.toLowerCase());
+	} catch { /* ignore */ }
 	return allowedPrefixes.some((prefix) => normalized.startsWith(prefix));
 }
 
