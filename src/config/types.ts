@@ -144,6 +144,8 @@ export interface CrewReliabilityConfig {
 	retryPolicy?: CrewRetryPolicyConfig;
 	autoRecover?: boolean;
 	deadletterThreshold?: number;
+	/** Interval (ms) for periodic stale-run auto-repair. Default 60_000 (60s). Set to 0 to disable. */
+	autoRepairIntervalMs?: number;
 }
 
 export interface CrewOtlpConfig {

@@ -143,6 +143,7 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 	let eventMetricSub: EventToMetricSubscription | undefined;
 	let metricSink: MetricSink | undefined;
 	let heartbeatWatcher: HeartbeatWatcher | undefined;
+	let autoRepairTimer: ReturnType<typeof setInterval> | undefined;
 	let otlpExporter: OTLPExporterType | undefined;
 	let deliveryCoordinator: DeliveryCoordinator | undefined;
 	let overflowTracker: OverflowRecoveryTracker | undefined;
@@ -172,6 +173,7 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 	};
 	const configureObservability = (ctx: ExtensionContext): void => {
 		heartbeatWatcher?.dispose();
+		if (autoRepairTimer) { clearInterval(autoRepairTimer); autoRepairTimer = undefined; }
 		metricSink?.dispose();
 		eventMetricSub?.dispose();
 		otlpExporter?.dispose();
@@ -212,6 +214,38 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 			},
 		});
 		heartbeatWatcher.start();
+
+		// Auto-repair: periodically reconcile stale/zombie runs during runtime.
+		// This catches tasks whose worker process died without calling submit_result,
+		// or whose heartbeat went dead while the session is still active.
+		if (autoRepairTimer) { clearInterval(autoRepairTimer); autoRepairTimer = undefined; }
+		const autoRepairIntervalMs = config.reliability?.autoRepairIntervalMs ?? 60_000;
+		if (autoRepairIntervalMs > 0) {
+			autoRepairTimer = setInterval(() => {
+				if (cleanedUp || !currentCtx) return;
+				try {
+					const staleResults = reconcileAllStaleRuns(currentCtx.cwd, getManifestCache(currentCtx.cwd));
+					if (staleResults.length > 0) {
+						for (const result of staleResults) {
+							if (result.repaired) {
+								notifyOperator({
+									id: `auto_repair_${result.runId}`,
+									severity: "info",
+									source: "auto-repair",
+									runId: result.runId,
+									title: `Auto-repaired stale run`,
+									body: result.detail,
+								});
+							}
+						}
+					}
+				} catch (error) {
+					logInternalError("register.autoRepair", error);
+				}
+			}, autoRepairIntervalMs);
+			autoRepairTimer.unref();
+		}
+
 		if (config.reliability?.autoRecover === true) {
 			const cwdSnapshot = ctx.cwd;
 			const cacheSnapshot = getManifestCache(cwdSnapshot);
@@ -557,6 +591,7 @@ export function registerPiTeams(pi: ExtensionAPI): void {
 		clearPiCrewPowerbar(pi.events, currentCtx);
 		disposePowerbarCoalescer();
 		heartbeatWatcher?.dispose();
+		if (autoRepairTimer) { clearInterval(autoRepairTimer); autoRepairTimer = undefined; }
 		metricSink?.dispose();
 		eventMetricSub?.dispose();
 		otlpExporter?.dispose();
