@@ -6,7 +6,6 @@ import type {
 	OperationTerminalEvidence,
 	TeamRunManifest,
 	TeamTaskState,
-	UsageState,
 } from "../state/types.ts";
 import { logInternalError } from "../utils/internal-error.ts";
 import { writeArtifact } from "../state/artifact-store.ts";
@@ -55,10 +54,7 @@ import {
 } from "./crew-agent-records.ts";
 import { reserveControlChannel } from "./agent-control.ts";
 import { parseSessionUsage } from "./session-usage.ts";
-import type {
-	CrewAgentProgress,
-	CrewRuntimeKind,
-} from "./crew-agent-runtime.ts";
+import type { CrewRuntimeKind } from "./crew-agent-runtime.ts";
 import {
 	shouldAppendProgressEventUpdate,
 	type ProgressEventSummary,
@@ -94,6 +90,7 @@ import {
 	parseSupervisorContactFromLine,
 	recordSupervisorContact,
 } from "./supervisor-contact.ts";
+import { readMailbox } from "../state/mailbox.ts";
 import {
 	registerStreamBridge,
 	bridgeEventFromJsonEvent,
@@ -105,7 +102,6 @@ import {
 	hasYieldInOutput,
 	isYieldEvent,
 	registerYieldTool,
-	type YieldResult,
 } from "./yield-handler.ts";
 import {
 	validateWorkerOutput,
@@ -275,6 +271,7 @@ export async function runTeamTask(
 		let transcriptPath: string | undefined;
 		let terminalEvidence: OperationTerminalEvidence[] = [];
 		const collectedJsonEvents: Record<string, unknown>[] = [];
+		let supervisorWaitRequested = false;
 
 		let startupEvidence = createStartupEvidence({
 			command:
@@ -430,13 +427,28 @@ export async function runTeamTask(
 								fs.mkdirSync(steeringDir, { recursive: true });
 								const steeringPath = `${steeringDir}/${task.id}.jsonl`;
 								for (const msg of task.pendingSteers) {
-									fs.appendFileSync(steeringPath, JSON.stringify({ type: "steer", message: msg, ts: new Date().toISOString() }) + "\n");
+									fs.appendFileSync(
+										steeringPath,
+										JSON.stringify({
+											type: "steer",
+											message: msg,
+											ts: new Date().toISOString(),
+										}) + "\n",
+									);
 								}
 								task.pendingSteers = [];
-								tasks = persistSingleTaskUpdate(manifest, tasks, task);
+								tasks = persistSingleTaskUpdate(
+									manifest,
+									tasks,
+									task,
+								);
 							}
 						} catch (err) {
-							logInternalError("task-runner.on-spawn", err as Error, `pid=${pid}, taskId=${task.id}`);
+							logInternalError(
+								"task-runner.on-spawn",
+								err as Error,
+								`pid=${pid}, taskId=${task.id}`,
+							);
 						}
 					},
 					onLifecycleEvent: (event: ChildPiLifecycleEvent) => {
@@ -451,9 +463,9 @@ export async function runTeamTask(
 					onStdoutLine: (line) => {
 						appendCrewAgentOutput(manifest, task.id, line);
 						persistHeartbeat();
-						// Check for supervisor contact requests from child Pi
 						const contact = parseSupervisorContactFromLine(line);
 						if (contact) {
+							supervisorWaitRequested = true;
 							recordSupervisorContact(manifest, {
 								runId: manifest.runId,
 								...contact,
@@ -466,7 +478,11 @@ export async function runTeamTask(
 						try {
 							appendCrewAgentEvent(manifest, task.id, event);
 						} catch (err) {
-							logInternalError("task-runner.append-crew-agent-event", err, `taskId=${task.id}`);
+							logInternalError(
+								"task-runner.append-crew-agent-event",
+								err,
+								`taskId=${task.id}`,
+							);
 						}
 						if (
 							event &&
@@ -477,15 +493,29 @@ export async function runTeamTask(
 								event as Record<string, unknown>,
 							);
 						// Accumulate lifetime usage via message_end events (survives compaction)
-						if (event && typeof event === "object" && (event as Record<string, unknown>).type === "message_end") {
-							const msg = (event as Record<string, unknown>).message as Record<string, unknown> | undefined;
+						if (
+							event &&
+							typeof event === "object" &&
+							(event as Record<string, unknown>).type ===
+								"message_end"
+						) {
+							const msg = (event as Record<string, unknown>)
+								.message as Record<string, unknown> | undefined;
 							if (msg?.role === "assistant") {
-								const usage = msg.usage as Record<string, number> | undefined;
+								const usage = msg.usage as
+									| Record<string, number>
+									| undefined;
 								if (usage) {
 									task.lifetimeUsage = {
-										input: (task.lifetimeUsage?.input ?? 0) + (usage.input ?? 0),
-										output: (task.lifetimeUsage?.output ?? 0) + (usage.output ?? 0),
-										cacheWrite: (task.lifetimeUsage?.cacheWrite ?? 0) + (usage.cacheWrite ?? 0),
+										input:
+											(task.lifetimeUsage?.input ?? 0) +
+											(usage.input ?? 0),
+										output:
+											(task.lifetimeUsage?.output ?? 0) +
+											(usage.output ?? 0),
+										cacheWrite:
+											(task.lifetimeUsage?.cacheWrite ??
+												0) + (usage.cacheWrite ?? 0),
 									};
 								}
 							}
@@ -493,12 +523,21 @@ export async function runTeamTask(
 						persistHeartbeat();
 						// Bug #3 fix: Write worker JSON events to background.log for debugging when running in background mode.
 						// This supplements the event log so developers can see what the child Pi worker produced.
-						if (process.env.PI_CREW_BACKGROUND_MODE === "1" && event) {
+						if (
+							process.env.PI_CREW_BACKGROUND_MODE === "1" &&
+							event
+						) {
 							try {
 								const bgLogPath = `${manifest.stateRoot}/background.log`;
-								const eventLine = typeof event === "object" && !Array.isArray(event) ? JSON.stringify(event) : String(event);
+								const eventLine =
+									typeof event === "object" &&
+									!Array.isArray(event)
+										? JSON.stringify(event)
+										: String(event);
 								fs.appendFileSync(bgLogPath, `${eventLine}\n`);
-							} catch { /* background log write failures should not affect task */ }
+							} catch {
+								/* background log write failures should not affect task */
+							}
 						}
 						task = {
 							...task,
@@ -824,8 +863,6 @@ export async function runTeamTask(
 		}
 
 		// --- Yield-based completion contract ---
-		// _yieldResult: preserved for future use — yield completion contract not yet wired to task.result
-		let _yieldResult: YieldResult | undefined;
 		let noYield = false;
 		const yieldEnabled =
 			input.runtimeConfig?.yield?.enabled ?? DEFAULT_YIELD_CONFIG.enabled;
@@ -835,7 +872,7 @@ export async function runTeamTask(
 					isYieldEvent(e),
 				);
 				if (yieldEvent) {
-					_yieldResult = extractYieldResult(yieldEvent);
+					extractYieldResult(yieldEvent);
 				}
 			} else if (!error) {
 				noYield = true;
@@ -957,11 +994,28 @@ export async function runTeamTask(
 			}
 		}
 
+		const pendingResponses = readMailbox(
+			manifest,
+			"inbox",
+			task.id,
+			"response",
+		);
+		const waitingForSupervisor =
+			supervisorWaitRequested && !pendingResponses.length;
+
 		task = {
 			...task,
-			status: error ? "failed" : noYield ? "needs_attention" : "completed",
-			finishedAt: new Date().toISOString(),
-			exitCode,
+			status: waitingForSupervisor
+				? "waiting"
+				: error
+					? "failed"
+					: noYield
+						? "needs_attention"
+						: "completed",
+			finishedAt: waitingForSupervisor
+				? undefined
+				: new Date().toISOString(),
+			exitCode: waitingForSupervisor ? undefined : exitCode,
 			modelAttempts,
 			usage: parsedOutput?.usage,
 			jsonEvents: parsedOutput?.jsonEvents,
@@ -984,12 +1038,14 @@ export async function runTeamTask(
 			),
 			promptArtifact,
 			resultArtifact,
-			claim: undefined,
+			claim: waitingForSupervisor ? task.claim : undefined,
 			heartbeat: touchWorkerHeartbeat(
 				task.heartbeat ?? createWorkerHeartbeat(task.id),
-				{ alive: false },
+				waitingForSupervisor ? undefined : { alive: false },
 			),
-			workerExitStatus: terminalEvidence.at(-1)?.exitStatus,
+			workerExitStatus: waitingForSupervisor
+				? undefined
+				: terminalEvidence.at(-1)?.exitStatus,
 			terminalEvidence: terminalEvidence.length
 				? [...(task.terminalEvidence ?? []), ...terminalEvidence]
 				: task.terminalEvidence,
@@ -1081,10 +1137,21 @@ export async function runTeamTask(
 		});
 		appendHookEvent(manifest, hookReport);
 		appendEvent(manifest.eventsPath, {
-			type: error ? "task.failed" : noYield ? "task.needs_attention" : "task.completed",
+			type: waitingForSupervisor
+				? "task.waiting"
+				: error
+					? "task.failed"
+					: noYield
+						? "task.needs_attention"
+						: "task.completed",
 			runId: manifest.runId,
 			taskId: task.id,
-			message: error,
+			message: waitingForSupervisor
+				? "Worker requested supervisor input and is waiting for response."
+				: error,
+			data: waitingForSupervisor
+				? { reason: "supervisor_contact" }
+				: undefined,
 		});
 		return { manifest, tasks };
 	} finally {
