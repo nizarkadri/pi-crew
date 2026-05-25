@@ -255,7 +255,7 @@ export function buildConfiguredModelRouting(input: {
 }): ConfiguredModelRouting {
 	const registryModels = availableModelInfosFromRegistry(input.modelRegistry);
 	const configModels = configuredModelInfosFromPiConfig(input.cwd);
-	const availableModels = registryModels && registryModels.length > 0 ? registryModels : configModels.length > 0 ? configModels : registryModels;
+	const availableModels = [...(registryModels ?? []), ...configModels.filter(m => !(registryModels ?? []).some(r => r.fullId === m.fullId))];
 	const parentModel = modelStringFromUnknown(input.parentModel);
 	const preferredProvider = parentModel?.split("/")[0] ?? availableModels?.[0]?.provider;
 	// B3: Parent model inheritance — when agent has no model specified,

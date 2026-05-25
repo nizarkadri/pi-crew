@@ -167,6 +167,7 @@ export function buildChildPiSpawnOptions(cwd: string, env: NodeJS.ProcessEnv): S
 			// Model provider API keys (these are safe to pass — they're meant for API calls)
 			"MINIMAX_*",
 			"OPENAI_*",
+			"OPENROUTER_*",
 			"ANTHROPIC_*",
 			"GOOGLE_*",
 			"AZURE_*",
