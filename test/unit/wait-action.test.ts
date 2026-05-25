@@ -77,7 +77,7 @@ test("wait returns error for non-existent run", async () => {
 			{ cwd },
 		);
 		assert.equal(waitResult.isError, true);
-		assert.match(firstText(waitResult), /timed out|failed/);
+		assert.match(firstText(waitResult), /not found/);
 	} finally {
 		removeTrackedTempDir(cwd);
 	}

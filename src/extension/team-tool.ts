@@ -730,6 +730,28 @@ function handleInvalidate(
 	});
 }
 
+/**
+ * Locate the CWD where a run's state is stored.
+ * Tries ctx.cwd first, then scans immediate child directories for .crew/state/runs/<runId>.
+ */
+function locateRunCwd(runId: string, baseCwd: string): string | undefined {
+	// Fast path: run is in the current CWD
+	if (loadRunManifestById(baseCwd, runId)) return baseCwd;
+
+	// Scan immediate child directories
+	try {
+		for (const entry of fs.readdirSync(baseCwd, { withFileTypes: true })) {
+			if (!entry.isDirectory()) continue;
+			const candidate = path.join(baseCwd, entry.name);
+			if (loadRunManifestById(candidate, runId)) return candidate;
+		}
+	} catch {
+		/* ignore unreadable dirs */
+	}
+
+	return undefined;
+}
+
 async function handleWait(
 	params: TeamToolParamsValue,
 	ctx: TeamContext,
@@ -742,17 +764,39 @@ async function handleWait(
 			true,
 		);
 
-	const timeoutMs =
-		typeof params.config?.timeoutMs === "number"
-			? params.config.timeoutMs
-			: 300_000;
-	const pollIntervalMs =
-		typeof params.config?.pollIntervalMs === "number"
-			? params.config.pollIntervalMs
-			: 2000;
+	const timeoutMs = Math.min(
+		Math.max(
+			typeof params.config?.timeoutMs === "number" &&
+				Number.isFinite(params.config.timeoutMs)
+				? params.config.timeoutMs
+				: 300_000,
+			1_000, // minimum 1 s
+		),
+		3_600_000, // maximum 1 h
+	);
+	const pollIntervalMs = Math.max(
+		Math.min(
+			typeof params.config?.pollIntervalMs === "number" &&
+				Number.isFinite(params.config.pollIntervalMs)
+				? params.config.pollIntervalMs
+				: 2000,
+			60_000, // maximum 60 s
+		),
+		500, // minimum 500 ms
+	);
+
+	// Resolve the run's CWD: try ctx.cwd first, then scan child dirs with .crew/
+	const runCwd = locateRunCwd(runId, ctx.cwd);
+	if (!runCwd) {
+		return result(
+			`Run '${runId}' not found in '${ctx.cwd}' or its subdirectories.`,
+			{ action: "wait", status: "error", runId },
+			true,
+		);
+	}
 
 	try {
-		const { manifest, tasks } = await waitForRun(runId, ctx.cwd, {
+		const { manifest, tasks } = await waitForRun(runId, runCwd, {
 			timeoutMs,
 			pollIntervalMs,
 		});
