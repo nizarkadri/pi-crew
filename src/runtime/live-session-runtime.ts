@@ -76,7 +76,7 @@ export interface LiveSessionPlannedResult {
 
 type LiveSessionModule = Record<string, unknown> & {
 	createAgentSession?: (options?: Record<string, unknown>) => Promise<{ session: LiveSessionLike; modelFallbackMessage?: string }>;
-	DefaultResourceLoader?: new (options: Record<string, unknown>) => { reload?: () => Promise<void> };
+	DefaultResourceLoader?: new (options: { cwd: string; agentDir: string; [key: string]: unknown }) => { reload?: () => Promise<void> };
 	SessionManager?: { inMemory?: (cwd?: string) => unknown; create?: (cwd?: string, sessionDir?: string) => unknown };
 	SettingsManager?: { create?: (cwd?: string, agentDir?: string) => unknown };
 	getAgentDir?: () => string;
@@ -360,8 +360,7 @@ export async function runLiveSessionTask(input: LiveSessionSpawnInput): Promise<
 				noPromptTemplates: true,
 				noThemes: true,
 				noContextFiles: input.runtimeConfig?.inheritContext !== true,
-				systemPromptOverride: () => liveSystemPrompt(input),
-				appendSystemPromptOverride: () => [],
+				systemPrompt: liveSystemPrompt(input),
 			});
 			await (resourceLoader as { reload?: () => Promise<void> }).reload?.();
 		}
