@@ -129,9 +129,7 @@ async function handleRun(
 import { waitForRun } from "../runtime/run-tracker.ts";
 import { normalizeSkillOverride } from "../runtime/skill-instructions.ts";
 import { logInternalError } from "../utils/internal-error.ts";
-import {
-	BM25Search,
-} from "../utils/bm25-search.ts";
+import { searchAgents, searchTeams } from "../utils/bm25-search.ts";
 import { projectCrewRoot } from "../utils/paths.ts";
 import {
 	type CacheControlDeps,
@@ -1119,6 +1117,35 @@ export async function handleTeamTool(
 				graphs.length ? `Available graphs:\n${graphs.join("\n")}` : "No graphs available.",
 				{ action: "graph", status: "ok" },
 			);
+		}
+		case "search": {
+			const query = params.goal ?? params.task ?? "";
+			if (!query) {
+				return result("Search requires goal or task query.", { action: "search", status: "error" }, true);
+			}
+			try {
+				const [agentResults, teamResults] = await Promise.all([
+					searchAgents(query, { limit: 5 }),
+					searchTeams(query, { limit: 3 }),
+				]);
+				const lines: string[] = [];
+				if (teamResults.length) {
+					lines.push("## Teams");
+					for (const r of teamResults) {
+						lines.push(`- [${r.team.name}] score=${r.score.toFixed(2)}: ${r.team.description ?? "(no description)"}`);
+					}
+				}
+				if (agentResults.length) {
+					lines.push("## Agents");
+					for (const r of agentResults) {
+						lines.push(`- [${r.agent.name}] score=${r.score.toFixed(2)}: ${r.agent.description ?? "(no description)"}`);
+					}
+				}
+				return result(lines.length ? lines.join("\n") : "No results found.", { action: "search", status: "ok" });
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				return result(`Search failed: ${msg}`, { action: "search", status: "error" }, true);
+			}
 		}
 		case "onboard": {
 			const team = params.team ?? "default";
