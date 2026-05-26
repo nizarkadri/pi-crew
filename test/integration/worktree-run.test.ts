@@ -74,7 +74,7 @@ test("worktree mode creates task worktrees and exposes them", async (t) => {
 		git(cwd, ["config", "user.email", "pi-crew@example.invalid"]);
 		git(cwd, ["config", "user.name", "pi Teams Test"]);
 		fs.writeFileSync(path.join(cwd, "README.md"), "test\n", "utf-8");
-		fs.writeFileSync(path.join(cwd, ".gitignore"), ".pi/\n.crew/\n", "utf-8");
+		fs.writeFileSync(path.join(cwd, ".gitignore"), ".pi/\n.crew/\n/.crew/\n/.crew\n!.crew/artifacts/\n!.crew/graphs/\n!.crew/artifacts/.gitkeep\n!.crew/graphs/.gitkeep\n", "utf-8");
 		git(cwd, ["add", "README.md", ".gitignore"]);
 		git(cwd, ["commit", "-m", "initial"]);
 
@@ -94,6 +94,12 @@ test("worktree mode creates task worktrees and exposes them", async (t) => {
 		assert.equal(cleanup.isError, false);
 		assert.match(firstText(cleanup), /Removed:/);
 	} finally {
+		// Clean up .crew/ before git checks for clean repository
+		// ensureCrewDirectory() creates .crew/ which makes the workspace dirty
+		const crewPath = path.join(cwd, ".crew");
+		if (fs.existsSync(crewPath)) {
+			fs.rmSync(crewPath, { recursive: true, force: true });
+		}
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
 });
